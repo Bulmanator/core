@@ -17,6 +17,7 @@ extern "C" {
 //
 //     - :core_types | core types used throughout
 //     - :macros     | utility macros and helpers
+//     - :intrinsics | cpu or compiler level builtins
 //
 // This header can be included in one of three ways:
 //     1. As a standalone header by simply including the header with no specific pre-defines. This is
@@ -340,6 +341,49 @@ struct Str8 {
     #define function static
 #endif
 
+//
+// --------------------------------------------------------------------------------
+// :intrinsics
+// --------------------------------------------------------------------------------
+//
+
+// returns the operand width in bits if the input is zero
+//
+function U32 CountLeadingZeros_U32(U32 x);
+function U64 CountLeadingZeros_U64(U64 x);
+
+function U32 CountTrailingZeros_U32(U32 x);
+function U64 CountTrailingZeros_U64(U64 x);
+
+// Input count is masked to the bit width of the operand
+//
+function U32 RotateLeft_U32(U32 x, U32 count);
+function U64 RotateLeft_U64(U64 x, U32 count);
+
+function U32 RotateRight_U32(U32 x, U32 count);
+function U64 RotateRight_U64(U64 x, U32 count);
+
+function U32 PopCount_U32(U32 x);
+function U64 PopCount_U64(U64 x);
+
+// atomics
+//
+// all return the value stored in the 'ptr' before the operation
+//
+function U32 AtomicAdd_U32(volatile U32 *ptr, U32 value);
+function U64 AtomicAdd_U64(volatile U64 *ptr, U64 value);
+
+function U32   AtomicExchange_U32(volatile U32   *value, U32   exchange);
+function U64   AtomicExchange_U64(volatile U64   *value, U64   exchange);
+function void *AtomicExchange_Ptr(void *volatile *value, void *exchange);
+
+// return true if operation succeeded, storing 'exchange' in 'value', otherwise returns false if
+// the current value of 'value' doesn't match that of 'comparand'
+//
+function B32 AtomicCompareExchange_U32(volatile U32   *value, U32   exchange, U32   comparand);
+function B32 AtomicCompareExchange_U64(volatile U64   *value, U64   exchange, U64   comparand);
+function B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *comparand);
+
 #if defined(__cplusplus)
 }
 #endif
@@ -347,3 +391,227 @@ struct Str8 {
 #endif  // CORE_H_
 
 #endif  // !CORE_IMPL
+
+#if defined(CORE_MODULE) || defined(CORE_IMPL)
+
+#if !defined(CORE_C_)
+#define CORE_C_
+
+#if COMPILER_MSVC
+
+#include <intrin.h>
+
+U32 CountLeadingZeros_U32(U32 x) {
+    unsigned long index;
+
+    U32 result = _BitScanReverse(&index, x) ? (31 - index) : 32;
+    return result;
+}
+
+U64 CountLeadingZeros_U64(U64 x) {
+    unsigned long index;
+
+    U64 result = _BitScanReverse64(&index, x) ? (63 - index) : 64;
+    return result;
+}
+
+U32 CountTrailingZeros_U32(U32 x) {
+    unsigned long index;
+
+    U32 result = _BitScanForward(&index, x) ? index : 32;
+    return result;
+}
+
+U64 CountTrailingZeros_U64(U64 x) {
+    unsigned long index;
+
+    U64 result = _BitScanForward64(&index, x) ? index : 64;
+    return result;
+}
+
+#if ARCH_AMD64
+
+U32 PopCount_U32(U32 x) {
+    U32 result = __popcnt(x);
+    return result;
+}
+
+U64 PopCount_U64(U64 x) {
+    U64 result = __popcnt64(x);
+    return result;
+}
+
+#elif ARCH_AARCH64
+
+U32 PopCount_U32(U32 x) {
+    U32 result = _CountOneBits(x);
+    return result;
+}
+
+U64 PopCount_U64(U64 x) {
+    U64 result = _CountOneBits64(x);
+    return result;
+}
+
+#endif
+
+// atomics
+//
+U32 AtomicAdd_U32(volatile U32 *ptr, U32 value) {
+    U32 result = _InterlockedExchangeAdd((volatile long *) ptr, value);
+    return result;
+}
+
+U64 AtomicAdd_U64(volatile U64 *value, U64 addend) {
+    U64 result = _InterlockedExchangeAdd64((volatile __int64 *) value, addend);
+    return result;
+}
+
+U32 AtomicExchange_U32(volatile U32 *value, U32 exchange) {
+    U32 result = _InterlockedExchange((volatile long *) value, exchange);
+    return result;
+}
+
+U64 AtomicExchange_U64(volatile U64 *value, U64 exchange) {
+    U64 result = _InterlockedExchange64((volatile __int64 *) value, exchange);
+    return result;
+}
+
+void *AtomicExchange_Ptr(void *volatile *value, void *exchange) {
+    void *result = _InterlockedExchangePointer(value, exchange);
+    return result;
+}
+
+B32 AtomicCompareExchange_U32(volatile U32 *value, U32 exchange, U32 comparand) {
+    B32 result = _InterlockedCompareExchange((volatile long *) value, exchange, comparand) == (long) comparand;
+    return result;
+}
+
+B32 AtomicCompareExchange_U64(volatile U64 *value, U64 exchange, U64 comparand) {
+    B32 result = _InterlockedCompareExchange64((volatile __int64 *) value, exchange, comparand) == (__int64) comparand;
+    return result;
+}
+
+B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *comparand) {
+    B32 result = _InterlockedCompareExchangePointer(value, exchange, comparand) == comparand;
+    return result;
+}
+
+#elif (COMPILER_CLANG || COMPILER_GCC)
+
+U32 CountLeadingZeros_U32(U32 x) {
+    U32 result = x ? __builtin_clz(x) : 32;
+    return result;
+}
+
+U64 CountLeadingZeros_U64(U64 x) {
+    U64 result = x ? __builtin_clzll(x) : 64;
+    return result;
+}
+
+U32 CountTrailingZeros_U32(U32 x) {
+    U32 result = x ? __builtin_ctz(x) : 32;
+    return result;
+}
+
+U64 CountTrailingZeros_U64(U64 x) {
+    U64 result = x ? __builtin_ctzll(x) : 64;
+    return result;
+}
+
+U32 PopCount_U32(U32 x) {
+    U32 result = __builtin_popcount(x);
+    return result;
+}
+
+U64 PopCount_U64(U64 x) {
+    U64 result = __builtin_popcountll(x);
+    return result;
+}
+
+// atomics
+//
+// @todo: handle memory ordering semantics more correctly
+//
+U32 AtomicAdd_U32(volatile U32 *ptr, U32 value) {
+    U32 result = __atomic_fetch_add(ptr, value, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+U64 AtomicAdd_U64(volatile U64 *ptr, U64 value) {
+    U64 result = __atomic_fetch_add(ptr, value, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+U32 AtomicExchange_U32(volatile U32 *value, U32 exchange) {
+    U32 result;
+
+    __atomic_exchange(value, &exchange, &result, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+U64 AtomicExchange_U64(volatile U64 *value, U64 exchange) {
+    U64 result;
+
+    __atomic_exchange(value, &exchange, &result, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+void *AtomicExchange_Ptr(void *volatile *value, void *exchange) {
+    void *result;
+
+    __atomic_exchange(value, &exchange, &result, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+B32 AtomicCompareExchange_U32(volatile U32 *value, U32 exchange, U32 comparand) {
+    B32 result = __atomic_compare_exchange(value, &comparand, &exchange, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+B32 AtomicCompareExchange_U64(volatile U64 *value, U64 exchange, U64 comparand) {
+    B32 result = __atomic_compare_exchange(value, &comparand, &exchange, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *comparand) {
+    B32 result = __atomic_compare_exchange(value, &comparand, &exchange, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+#endif
+
+// agnostic across all compilers, msvc has specific intrinsics for this but under optimisations correctly
+// detects these as the right instructions
+//
+U32 RotateLeft_U32(U32 x, U32 count) {
+    count &= 31;
+
+    U32 result = (x << count) | (x >> (32 - count));
+    return result;
+}
+
+U64 RotateLeft_U64(U64 x, U32 count) {
+    count &= 63;
+
+    U64 result = (x << count) | (x >> (64 - count));
+    return result;
+}
+
+U32 RotateRight_U32(U32 x, U32 count) {
+    count &= 31;
+
+    U32 result = (x >> count) | (x << (32 - count));
+    return result;
+}
+
+U64 RotateRight_U64(U64 x, U32 count) {
+    count &= 63;
+
+    U64 result = (x >> count) | (x << (64 - count));
+    return result;
+}
+
+#endif  // CORE_C_
+
+#endif  // CORE_MODULE || CORE_IMPL

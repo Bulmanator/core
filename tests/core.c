@@ -11,7 +11,7 @@ struct ListNode {
     int value;
 };
 
-#define ExpectIntValue(a, v) printf("    Testing... %s == %d", #a, v); Assert((a) == (v)); printf(" ... passed\n");
+#define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); Assert((a) == (v)); printf(" ... passed\n");
 
 static int ExecuteTests(int argc, char **argv) {
     // ... do nothing for now
@@ -141,6 +141,88 @@ static int ExecuteTests(int argc, char **argv) {
     }
     printf("\n");
 
+    printf("-- Intrinsics\n");
+    {
+        U32 v0 = 0x78;
+        U64 v1 = 0x1F800;
+
+        ExpectIntValue(CountLeadingZeros_U32(v0), 25);
+        ExpectIntValue(CountLeadingZeros_U64(v1), 47);
+
+        ExpectIntValue(CountTrailingZeros_U32(v0), 3);
+        ExpectIntValue(CountTrailingZeros_U64(v1), 11);
+
+        U32 v2 = 0xFF00FF00;
+        U64 v3 = 0x00FF00FF;
+
+        ExpectIntValue(RotateLeft_U32(v2, 5), 0xE01FE01F);
+        ExpectIntValue(RotateLeft_U64(v3, 17), 0x1FE01FE0000);
+
+        ExpectIntValue(RotateRight_U32(v2, 5), 0x7F807F8);
+        ExpectIntValue(RotateRight_U64(v3, 17), 0x807F80000000007F);
+
+        U32 v4 = 0x26B5;
+        U64 v5 = 0x240C1C6222;
+
+        ExpectIntValue(PopCount_U32(v4), 8);
+        ExpectIntValue(PopCount_U64(v5), 12);
+    }
+    printf("\n");
+
+    printf("-- Atomics\n");
+    {
+        // This isn't really a test for the atomics as there isn't any thread contention but
+        // proves the produce correct results and as they are just using the compiler intrinsics
+        // they are likely produce the correct interlocked instructions
+        //
+
+        volatile U32 v0 = 100;
+        U32 v1 = AtomicAdd_U32(&v0, 25);
+
+        ExpectIntValue(v0, 125);
+        ExpectIntValue(v1, 100);
+
+        volatile U64 v2 = 44000 | (1ULL << 35);
+        U64 v3 = AtomicAdd_U64(&v2, 444);
+
+        ExpectIntValue(v2, 44444 | (1ULL << 35));
+        ExpectIntValue(v3, 44000 | (1ULL << 35));
+
+        U32 v4 = AtomicExchange_U32(&v0, 1000);
+
+        ExpectIntValue(v0, 1000);
+        ExpectIntValue(v4, 125);
+
+        U64 v5 = AtomicExchange_U64(&v2, 4344);
+
+        ExpectIntValue(v2, 4344);
+        ExpectIntValue(v5, 44444 | (1ULL << 35));
+
+        void *v6 = (void *) 0x3939393939;
+        void *v7 = AtomicExchange_Ptr(&v6, (void *) 0x4545454545);
+
+        ExpectIntValue((U64) v6, 0x4545454545);
+        ExpectIntValue((U64) v7, 0x3939393939);
+
+        volatile U32 v8 = 10;
+
+        ExpectIntValue(AtomicCompareExchange_U32(&v8, 100, 10), (B32) true);
+        ExpectIntValue(AtomicCompareExchange_U32(&v8, 20,  10), (B32) false);
+        ExpectIntValue(v8, 100);
+
+        volatile U64 v9 = 2020;
+        ExpectIntValue(AtomicCompareExchange_U64(&v9, 4040, 2020), (B32) true);
+        ExpectIntValue(AtomicCompareExchange_U64(&v9, 10,   2020), (B32) false);
+        ExpectIntValue(v9, 4040);
+
+        void *v10 = (void *) 0x10101010;
+
+        ExpectIntValue(AtomicCompareExchange_Ptr(&v10, (void *) 0x20202020, (void *) 0x10101010), (B32) true);
+        ExpectIntValue(AtomicCompareExchange_Ptr(&v10, (void *) 0x30303030, (void *) 0x10101010), (B32) false);
+        ExpectIntValue((U64) v10, 0x20202020);
+    }
+    printf("\n");
+
     return 0;
 }
 
@@ -148,4 +230,3 @@ int main(int argc, char **argv) {
     int result = ExecuteTests(argc, argv);
     return result;
 }
-
