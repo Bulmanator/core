@@ -223,6 +223,17 @@ static int ExecuteTests(int argc, char **argv) {
     }
     printf("\n");
 
+    printf("-- Arena\n");
+    {
+        M_Arena *arena = M_AllocArena(GB(8));
+
+        printf("    Arena pointer = %p\n", arena);
+
+        M_ResetArena(arena);
+        M_ReleaseArena(arena);
+    }
+    printf("\n");
+
     return 0;
 }
 

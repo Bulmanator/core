@@ -18,6 +18,7 @@ extern "C" {
 //     - :core_types | core types used throughout
 //     - :macros     | utility macros and helpers
 //     - :intrinsics | cpu or compiler level builtins
+//     - :arena      | memory arena implementation
 //
 // This header can be included in one of three ways:
 //     1. As a standalone header by simply including the header with no specific pre-defines. This is
@@ -199,6 +200,27 @@ struct Str8 {
 #else
     #undef  LANG_C
     #define LANG_C 1
+#endif
+
+// platform specific includes
+//
+#if OS_WINDOWS
+    #if !defined(WIN32_LEAN_AND_MEAN)
+        #define WIN32_LEAN_AND_MEAN 1
+    #endif
+
+    // :note ~windows
+    //
+    // we include windows.h here because we need a lot of its definitions for the winapi implementation
+    // and due to conflicting macro definitions for function decorators it is best if it is included
+    // as early as possible.
+    //
+    // currently this doesn't really serve a purpose for the public facing api, however, in the future
+    // it is likely we will want to expose portions of the platform specific implementation
+    // which will require us to include this anyway
+    //
+    #include <windows.h>
+    #pragma warning(disable : 4201) // nonstandard extension used: nameless struct/union
 #endif
 
 // utilities
@@ -384,6 +406,79 @@ function B32 AtomicCompareExchange_U32(volatile U32   *value, U32   exchange, U3
 function B32 AtomicCompareExchange_U64(volatile U64   *value, U64   exchange, U64   comparand);
 function B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *comparand);
 
+//
+// --------------------------------------------------------------------------------
+// :arena
+// --------------------------------------------------------------------------------
+//
+
+// os virtual memory
+//
+function void *OS_ReserveMemory(U64 size);
+function B32   OS_CommitMemory(void *base, U64 size);
+function void  OS_DecommitMemory(void *base, U64 size);
+function void  OS_ReleaseMemory(void *base, U64 size);
+
+function U64 OS_GetPageSize();
+function U64 OS_GetAllocationGranularity();
+
+// memory size macros
+//
+#define KB(x) ((U64) (x) << 10)
+#define MB(x) ((U64) (x) << 20)
+#define GB(x) ((U64) (x) << 30)
+#define TB(x) ((U64) (x) << 40)
+
+typedef U32 M_ArenaFlags;
+enum {
+    // prevents the arena from growing when the limit is reached
+    //
+    // provided when arena is allocated
+    //
+    M_ARENA_DONT_GROW = (1 << 0),
+
+    // doesn't clear push allocations to zero
+    //
+    // provided per push call
+    //
+    M_ARENA_NO_ZERO = (1 << 1)
+};
+
+typedef union M_Arena M_Arena;
+union M_Arena {
+    struct {
+        M_Arena *current;
+        M_Arena *prev;
+
+        U64 base;
+        U64 limit;
+        U64 offset;
+        U64 last_offset;
+
+        U64 committed;
+        U64 commit_size;
+
+        M_ArenaFlags flags;
+    };
+
+    // make sure arena is padded to 128 bytes, gives us a lot of leeway
+    //
+    U8 pad[128];
+};
+
+StaticAssert(sizeof(M_Arena) == 128, "M_Arena is not 128-bytes in size");
+
+// allocation
+//
+function M_Arena *M_AllocArenaArgs(U64 limit, U64 commit, M_ArenaFlags flags);
+function M_Arena *M_AllocArena(U64 limit);
+
+// reset will clear all allocations from the arena, but it will remain valid to use for further allocations
+// release will free all backing memory from the arena making it invalid to use
+//
+function void M_ResetArena(M_Arena *arena);
+function void M_ReleaseArena(M_Arena *arena);
+
 #if defined(__cplusplus)
 }
 #endif
@@ -396,6 +491,12 @@ function B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, vo
 
 #if !defined(CORE_C_)
 #define CORE_C_
+
+//
+// --------------------------------------------------------------------------------
+// :impl_intrinsics
+// --------------------------------------------------------------------------------
+//
 
 #if COMPILER_MSVC
 
@@ -611,6 +712,169 @@ U64 RotateRight_U64(U64 x, U32 count) {
     U64 result = (x >> count) | (x << (64 - count));
     return result;
 }
+
+//
+// --------------------------------------------------------------------------------
+// :impl_arena
+// --------------------------------------------------------------------------------
+//
+
+// os virtual memory
+//
+#if OS_WINDOWS
+
+void *OS_ReserveMemory(U64 size) {
+    void *result = VirtualAlloc(0, size, MEM_RESERVE, PAGE_NOACCESS);
+    return result;
+}
+
+B32 OS_CommitMemory(void *base, U64 size) {
+    B32 result = VirtualAlloc(base, size, MEM_COMMIT, PAGE_READWRITE) != 0;
+    return result;
+}
+
+void OS_DecommitMemory(void *base, U64 size) {
+    VirtualFree(base, size, MEM_DECOMMIT);
+}
+
+void OS_ReleaseMemory(void *base, U64 size) {
+    (void) size;
+    VirtualFree(base, 0, MEM_RELEASE);
+}
+
+U64 OS_GetPageSize() {
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+
+    U64 result = info.dwPageSize;
+    return result;
+}
+
+U64 OS_GetAllocationGranularity() {
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+
+    U64 result = info.dwAllocationGranularity;
+    return result;
+}
+
+#elif OS_MACOS
+#error "macOS memory subsystem not implemented"
+#elif OS_LINUX
+#error "linux memory subsystem not implemented"
+#elif OS_SWITCH
+#error "switch memory subsystem not implemented"
+#endif
+
+#define M_ARENA_MIN_OFFSET sizeof(M_Arena)
+
+#if !defined(M_ARENA_DEFAULT_COMMIT_SIZE)
+    #define M_ARENA_DEFAULT_COMMIT_SIZE KB(64)
+#endif
+
+#if !defined(M_ARENA_MAX_RESERVE_SWITCH)
+    #define M_ARENA_MAX_RESERVE_SWITCH MB(8)
+#endif
+
+internal M_Arena *__M_AllocSizedArena(U64 limit, U64 commit, M_ArenaFlags flags) {
+    M_Arena *result = 0;
+
+    U64 page_size   = OS_GetPageSize();
+    U64 granularity = OS_GetAllocationGranularity();
+
+    // have at least the allocation granularity to reserve and at least the page size to commit
+    //
+    U64 to_reserve = Max(AlignUp(limit,  granularity), granularity);
+    U64 to_commit  = Max(AlignUp(commit, page_size), page_size);
+
+    void *base = OS_ReserveMemory(to_reserve);
+    if (base != 0) {
+        if (OS_CommitMemory(base, to_commit)) {
+            result = cast(M_Arena *) base;
+
+            result->current = result;
+            result->prev    = 0;
+
+            result->base        = 0;
+            result->limit       = to_reserve;
+            result->offset      = M_ARENA_MIN_OFFSET;
+            result->last_offset = M_ARENA_MIN_OFFSET;
+
+            result->committed   = to_commit;
+            result->commit_size = to_commit;
+
+            result->flags = flags;
+        }
+    }
+
+    Assert(result != 0);
+
+    return result;
+}
+
+M_Arena *M_AllocArenaArgs(U64 limit, U64 commit, M_ArenaFlags flags) {
+#if OS_SWITCH
+    // :note ~switchbrew
+    //
+    // swtichbrew doesn't support virtual memory semantics, this means we can't just ask
+    // for 64GiB of virtual address space to commit later and get away with it like on
+    // other operating systems.
+    //
+    // to work around this we force growable arenas on and clamp the initial arena size to a
+    // more reasonable size
+    //
+    flags &= ~M_ARENA_DONT_GROW;
+    limit  = Min(limit, M_ARENA_MAX_RESERVE_SWITCHBREW);
+#endif
+
+    M_Arena *result = __M_AllocSizedArena(limit, commit, flags);
+    return result;
+}
+
+M_Arena *M_AllocArena(U64 limit) {
+    M_Arena *result = M_AllocArenaArgs(limit, M_ARENA_DEFAULT_COMMIT_SIZE, 0);
+    return result;
+}
+
+void M_ResetArena(M_Arena *arena) {
+    M_Arena *current = arena->current;
+    while (current->prev != 0) {
+        void *base = cast(void *) current;
+        U64   size = current->limit;
+
+        current = current->prev;
+
+        OS_ReleaseMemory(base, size);
+    }
+
+    Assert(current == arena);
+    Assert(current->committed >= current->commit_size);
+
+    void *decommit_base = cast(U8 *) current + current->commit_size;
+    U64   decommit_size = current->committed - current->commit_size;
+
+    if (decommit_size != 0) { OS_DecommitMemory(decommit_base, decommit_size); }
+
+    current->offset      = M_ARENA_MIN_OFFSET;
+    current->last_offset = M_ARENA_MIN_OFFSET;
+    current->committed   = arena->commit_size;
+
+    arena->current = current;
+}
+
+void M_ReleaseArena(M_Arena *arena) {
+    M_Arena *current = arena->current;
+    while (current != 0) {
+        void *base = cast(void *) current;
+        U64   size = current->limit;
+
+        current = current->prev;
+
+        OS_ReleaseMemory(base, size);
+    }
+}
+
+
 
 #endif  // CORE_C_
 
