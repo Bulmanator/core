@@ -12,6 +12,7 @@ struct ListNode {
 };
 
 #define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); Assert((a) == (v)); printf(" ... passed\n");
+#define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); Assert((a) == (v)); printf(" ... passed\n");
 
 static int ExecuteTests(int argc, char **argv) {
     // ... do nothing for now
@@ -223,16 +224,137 @@ static int ExecuteTests(int argc, char **argv) {
     }
     printf("\n");
 
+    printf("-- Utilities\n");
+    {
+        U64 v0 = cast(U64) U32_MAX + 3333333333ULL;
+        U32 v1 = cast(U32) U16_MAX + 333333ULL;
+        U16 v2 = cast(U64) U8_MAX  + 124ULL;
+
+        ExpectIntValue(SaturateCast_U32(v0), U32_MAX);
+        ExpectIntValue(SaturateCast_U16(v1), U16_MAX);
+        ExpectIntValue(SaturateCast_U8 (v2), U8_MAX);
+
+        U64 v3 = 333;
+        U32 v4 = 333;
+        U16 v5 = 124;
+
+        ExpectIntValue(SafeTruncate_U32(v3), 333);
+        ExpectIntValue(SafeTruncate_U16(v4), 333);
+        ExpectIntValue(SafeTruncate_U8 (v5), 124);
+
+        // these will all fail with an assertion
+        //
+        // SafeTruncate_U32(v0);
+        // SafeTruncate_U16(v1);
+        // SafeTruncate_U8(v2);
+        //
+
+        ExpectFloatValue(SafeRatio0_F32(1, 4), 0.25f);
+        ExpectFloatValue(SafeRatio0_F64(1, 4), 0.25);
+
+        ExpectFloatValue(SafeRatio1_F32(1, 4), 0.25f);
+        ExpectFloatValue(SafeRatio1_F64(1, 4), 0.25);
+
+        ExpectFloatValue(SafeRatio0_F32(1, 0), 0.0f);
+        ExpectFloatValue(SafeRatio0_F64(1, 0), 0.0);
+
+        ExpectFloatValue(SafeRatio1_F32(1, 0), 1.0f);
+        ExpectFloatValue(SafeRatio1_F64(1, 0), 1.0);
+
+        ExpectIntValue(NextPow2_U32(135), 256);
+        ExpectIntValue(NextPow2_U64((1ULL << 33ULL) - 1), (1ULL << 33ULL));
+
+        ExpectIntValue(PrevPow2_U32(4519), 4096);
+        ExpectIntValue(PrevPow2_U64((1ULL << 35ULL) - 1), (1ULL << 34ULL));
+
+        ExpectIntValue(NearestPow2_U32(3049), 2048);
+        ExpectIntValue(NearestPow2_U64((1ULL << 35ULL) - 1), (1ULL << 35ULL));
+
+        U32 s = 10, d = 0;
+
+        M_CopySize(&d, &s, sizeof(U32));
+        ExpectIntValue(d, 10);
+
+        M_FillSize(&d, 0xFF, sizeof(U32));
+        ExpectIntValue(d, U32_MAX);
+
+        M_ZeroSize(&d, sizeof(U32));
+        ExpectIntValue(d, 0);
+    }
+    printf("\n");
+
     printf("-- Arena\n");
     {
         M_Arena *arena = M_AllocArena(GB(8));
 
-        printf("    Arena pointer = %p\n", arena);
+        ExpectIntValue(arena->committed, M_ARENA_COMMIT_SIZE);
+
+        U32 *single = M_ArenaPush(arena, U32);
+        ExpectIntValue(arena->offset, 68);
+
+        single[0] = 22;
+
+        U32 *array = M_ArenaPush(arena, U32, 32);
+        ExpectIntValue(arena->offset, 196);
+
+        for (U32 it = 0; it < 32; ++it) {
+            array[it] = it;
+        }
+
+        M_ArenaPop(arena, U32, 32);
+        ExpectIntValue(arena->offset, 68);
+
+        U32 *arrayflag = M_ArenaPush(arena, U32, 32, M_ARENA_NO_ZERO);
+
+        for (U32 it = 0; it < 32; ++it) {
+            ExpectIntValue(arrayflag[it], it);
+        }
+
+        M_ArenaPop(arena, U32, 32);
+
+        U32 *arrayalign = M_ArenaPush(arena, U32, 32, 0, 8);
+
+        ExpectIntValue((U64) arrayalign & 7, 0);
+        ExpectIntValue(arena->offset, 200);
+
+        M_ArenaPopLast(arena);
+        ExpectIntValue(arena->offset, 68);
+
+        M_ArenaPop(arena, U32);
+
+        ExpectIntValue(arena->offset, 64);
+
+        U32 *a = M_ArenaPush(arena, U32, 10);
+
+        for (U32 it = 0; it < 10; ++it) { a[it] = it; }
+
+        U32 *b = M_ArenaPushCopy(arena, a, U32, 10);
+
+        ExpectIntValue(M_CompareSize(a, b, 10 * sizeof(U32)), (U64) true);
+
+        M_Temp tempa = M_GetTemp(0, 0);
+        M_Temp tempb = M_GetTemp(1, &tempa.arena);
+
+        ExpectIntValue(tempa.arena != tempb.arena, (U64) true);
+
+        M_ArenaPush(tempa.arena, U32, 256);
+        M_ReleaseTemp(tempa);
+
+        // don't do this in production code, just testing to make sure the
+        // arena was reset correctly
+        //
+        ExpectIntValue(tempa.arena->offset, 64);
 
         M_ResetArena(arena);
         M_ReleaseArena(arena);
+
+        // should cause an access violation
+        //
+        // printf("current offset = %llu\n", arena->offset);
     }
     printf("\n");
+
+    printf("[all tests passed successfully]\n");
 
     return 0;
 }

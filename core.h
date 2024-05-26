@@ -18,6 +18,7 @@ extern "C" {
 //     - :core_types | core types used throughout
 //     - :macros     | utility macros and helpers
 //     - :intrinsics | cpu or compiler level builtins
+//     - :utilities  | some basic utility functions
 //     - :arena      | memory arena implementation
 //
 // This header can be included in one of three ways:
@@ -94,24 +95,6 @@ struct Str8 {
     S64 count;
     U8 *data;
 };
-
-#define U8_MAX  ((U8)  -1)
-#define U16_MAX ((U16) -1)
-#define U32_MAX ((U32) -1)
-#define U64_MAX ((U64) -1)
-
-#define S8_MIN  ((S8)  0x80)
-#define S16_MIN ((S16) 0x8000)
-#define S32_MIN ((S32) 0x80000000)
-#define S64_MIN ((S64) 0x8000000000000000)
-
-#define S8_MAX  ((U8)  0x7F)
-#define S16_MAX ((U16) 0x7FFF)
-#define S32_MAX ((U32) 0x7FFFFFFF)
-#define S64_MAX ((U64) 0x7FFFFFFFFFFFFFFF)
-
-#define F32_MAX ((F32) 3.40282346638528859811704183484516925e+038F)
-#define F64_MAX ((F64) 1.79769313486231570814527423731704357e+308 )
 
 //
 // --------------------------------------------------------------------------------
@@ -211,13 +194,13 @@ struct Str8 {
 
     // :note ~windows
     //
-    // we include windows.h here because we need a lot of its definitions for the winapi implementation
-    // and due to conflicting macro definitions for function decorators it is best if it is included
-    // as early as possible.
+    // we include windows.h here because we need a lot of its definitions for the winapi
+    // implementation and due to conflicting macro definitions for function decorators it
+    // is best if it is included as early as possible.
     //
-    // currently this doesn't really serve a purpose for the public facing api, however, in the future
-    // it is likely we will want to expose portions of the platform specific implementation
-    // which will require us to include this anyway
+    // currently this doesn't really serve a purpose for the public facing api, however, in
+    // the future it is likely we will want to expose portions of the platform specific
+    // implementation which will require us to include this anyway
     //
     #include <windows.h>
     #pragma warning(disable : 4201) // nonstandard extension used: nameless struct/union
@@ -232,6 +215,28 @@ struct Str8 {
 
 #define Assert(exp) assert(exp)
 #define StaticAssert(exp, msg) static_assert(exp, msg)
+
+#if OS_WINDOWS
+    // taken from the windows kits header, allows us to have a nice graphical message box
+    // for assert when compiling for windows subsystem
+    //
+    // clang correctly uses the windows kits headers as well, however, msvc has an internal
+    // function called '_assert' that is the same as '_wassert' but takes regular ansi strings
+    // and is available without extra includes
+    //
+    // clang does not provide this '_assert' function so we're better off just using the '_wassert'
+    // call regardless
+    //
+    #define AssertAlways(exp) (void) ((!!(exp)) || (_wassert(L#exp, Glue(L, __FILE__), __LINE__), 0))
+#elif OS_SWITCH
+    // devkitpro has the parameters in a wack order for some reason
+    //
+    #define AssertAlways(exp) (void) ((!!(exp)) || (__assert_func(__FILE__, __LINE__, __PRETTY_FUNCTION__, #exp), 0))
+#else
+    // default fallback, both normal clang and gcc use this
+    //
+    #define AssertAlways(exp) (void) ((!!(exp)) || (__assert_fail(#exp, __FILE__, __LINE__, __PRETTY_FUNCTION__), 0))
+#endif
 
 #define ArraySize(x) (sizeof(x) / sizeof((x)[0]))
 #define OffsetTo(T, m) ((U64) &(((T *) 0)->m))
@@ -363,6 +368,42 @@ struct Str8 {
     #define function static
 #endif
 
+// constants
+//
+#if !defined(EPSILON_F32)
+    // clang default value for FLT_EPSILON
+    //
+    #define EPSILON_F32 (F32) 1.19209290e-7f
+#endif
+
+#if !defined(EPSILON_F64)
+    // clang default value for DBL_EPSILON
+    //
+    #define EPSILON_F64 (F64) 2.2204460492503131e-16
+#endif
+
+#define E_F32   (2.718281828459045235360287f)
+#define PI_F32  (3.141592653589793238462643f)
+#define TAU_F32 (2.0f * PI_F32)
+
+#define U8_MAX  ((U8)  -1)
+#define U16_MAX ((U16) -1)
+#define U32_MAX ((U32) -1)
+#define U64_MAX ((U64) -1)
+
+#define S8_MIN  ((S8)  0x80)
+#define S16_MIN ((S16) 0x8000)
+#define S32_MIN ((S32) 0x80000000)
+#define S64_MIN ((S64) 0x8000000000000000)
+
+#define S8_MAX  ((U8)  0x7F)
+#define S16_MAX ((U16) 0x7FFF)
+#define S32_MAX ((U32) 0x7FFFFFFF)
+#define S64_MAX ((U64) 0x7FFFFFFFFFFFFFFF)
+
+#define F32_MAX ((F32) 3.40282346638528859811704183484516925e+038F)
+#define F64_MAX ((F64) 1.79769313486231570814527423731704357e+308 )
+
 //
 // --------------------------------------------------------------------------------
 // :intrinsics
@@ -405,6 +446,43 @@ function void *AtomicExchange_Ptr(void *volatile *value, void *exchange);
 function B32 AtomicCompareExchange_U32(volatile U32   *value, U32   exchange, U32   comparand);
 function B32 AtomicCompareExchange_U64(volatile U64   *value, U64   exchange, U64   comparand);
 function B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *comparand);
+
+//
+// --------------------------------------------------------------------------------
+// :utilities
+// --------------------------------------------------------------------------------
+//
+
+function U32 SaturateCast_U32(U64 value);
+function U16 SaturateCast_U16(U32 value);
+function U8  SaturateCast_U8 (U16 value);
+
+function U32 SafeTruncate_U32(U64 value);
+function U16 SafeTruncate_U16(U32 value);
+function U8  SafeTruncate_U8 (U16 value);
+
+function F32 SafeRatio0_F32(F32 num, F32 denom);
+function F64 SafeRatio0_F64(F64 num, F64 denom);
+
+function F32 SafeRatio1_F32(F32 num, F32 denom);
+function F64 SafeRatio1_F64(F64 num, F64 denom);
+
+function U32 NextPow2_U32(U32 value);
+function U64 NextPow2_U64(U64 value);
+
+function U32 PrevPow2_U32(U32 value);
+function U64 PrevPow2_U64(U64 value);
+
+function U32 NearestPow2_U32(U32 value);
+function U64 NearestPow2_U64(U64 value);
+
+// all return a pointer to the beginning of dst
+//
+function void *M_CopySize(void *dst, void *src, U64 size);
+function void *M_FillSize(void *dst, U8 value, U64 size);
+function void *M_ZeroSize(void *dst, U64 size);
+
+function B32 M_CompareSize(void *a, void *b, U64 size);
 
 //
 // --------------------------------------------------------------------------------
@@ -456,28 +534,94 @@ union M_Arena {
         U64 last_offset;
 
         U64 committed;
-        U64 commit_size;
 
         M_ArenaFlags flags;
     };
 
-    // make sure arena is padded to 128 bytes, gives us a lot of leeway
+    // make sure arena is padded to 64 bytes, can increase to 128 bytes if needed
+    // this currently fits into a single cache line which is nice
     //
-    U8 pad[128];
+    U8 pad[64];
 };
 
-StaticAssert(sizeof(M_Arena) == 128, "M_Arena is not 128-bytes in size");
+StaticAssert(sizeof(M_Arena) == 64, "M_Arena is not 64-bytes in size");
 
 // allocation
 //
-function M_Arena *M_AllocArenaArgs(U64 limit, U64 commit, M_ArenaFlags flags);
+function M_Arena *M_AllocArenaArgs(U64 limit, U64 initial_commit, M_ArenaFlags flags);
 function M_Arena *M_AllocArena(U64 limit);
 
-// reset will clear all allocations from the arena, but it will remain valid to use for further allocations
+// reset will clear all allocations from the arena, but it will remain valid to use for
+// further allocations
+//
 // release will free all backing memory from the arena making it invalid to use
 //
 function void M_ResetArena(M_Arena *arena);
 function void M_ReleaseArena(M_Arena *arena);
+
+// push/push copy calls to allocate from arenas
+//
+function void *M_ArenaPushFrom(M_Arena *arena, U64 size, M_ArenaFlags flags, U64 alignment);
+function void *M_ArenaPushCopyFrom(M_Arena *arena, void *src, U64 size, M_ArenaFlags flags, U64 alignment);
+
+// helper macros for allocating types and arrays from arenas
+//
+#define M_ArenaPush(...)     M_ArenaPushExpand((__VA_ARGS__, M_ArenaPushTNFA, M_ArenaPushTNF, M_ArenaPushTN, M_ArenaPushT))(__VA_ARGS__)
+#define M_ArenaPushCopy(...) M_ArenaPushCopyExpand((__VA_ARGS__, M_ArenaPushCopyTNFA, M_ArenaPushCopyTNF, M_ArenaPushCopyTN, M_ArenaPushCopyT))(__VA_ARGS__)
+
+function U64 M_GetArenaOffset(M_Arena *arena);
+
+// pop calls to remove allocations from the end of arenas
+//
+function void M_ArenaPopTo(M_Arena *arena, U64 offset);
+function void M_ArenaPopSize(M_Arena *arena, U64 size);
+function void M_ArenaPopLast(M_Arena *arena);
+
+// helper macro for popping types and arrays
+//
+#define M_ArenaPop(...) M_ArenaPopExpand((__VA_ARGS__, M_ArenaPopTN, M_ArenaPopT))(__VA_ARGS__)
+
+// thread local temporary arenas
+//
+typedef struct M_Temp M_Temp;
+struct M_Temp {
+    M_Arena *arena;
+    U64 offset;
+};
+
+// get a thread local temporary arena, any arenas supplied in the 'conflicts' array
+// will not be re-acquired by this call
+//
+function M_Temp M_GetTemp(U32 count, M_Arena **conflicts);
+
+// release an acquired temporary arena
+//
+function void M_ReleaseTemp(M_Temp temp);
+
+// supporting macros for push/pop default argument selection
+//
+// :note these are just implementation details and can be mostly ignored
+//
+#define M_ArenaPushExpand(args) M_ArenaPushSelect args
+#define M_ArenaPushCopyExpand(args) M_ArenaPushCopySelect args
+#define M_ArenaPopExpand(args) M_ArenaPopSelect args
+
+#define M_ArenaPushSelect(a, b, c, d, e, f, ...) f
+#define M_ArenaPushCopySelect(a, b, c, d, e, f, g, ...) g
+#define M_ArenaPopSelect(a, b, c, d, ...) d
+
+#define M_ArenaPushT(arena, T)             (T *) M_ArenaPushFrom((arena),       sizeof(T), 0, AlignOf(T))
+#define M_ArenaPushTN(arena, T, n)         (T *) M_ArenaPushFrom((arena), (n) * sizeof(T), 0, AlignOf(T))
+#define M_ArenaPushTNF(arena, T, n, f)     (T *) M_ArenaPushFrom((arena), (n) * sizeof(T), f, AlignOf(T))
+#define M_ArenaPushTNFA(arena, T, n, f, a) (T *) M_ArenaPushFrom((arena), (n) * sizeof(T), f, a)
+
+#define M_ArenaPushCopyT(arena, src, T)             (T *) M_ArenaPushCopyFrom((arena), (src),       sizeof(T), 0, AlignOf(T))
+#define M_ArenaPushCopyTN(arena, src, T, n)         (T *) M_ArenaPushCopyFrom((arena), (src), (n) * sizeof(T), 0, AlignOf(T))
+#define M_ArenaPushCopyTNF(arena, src, T, n, f)     (T *) M_ArenaPushCopyFrom((arena), (src), (n) * sizeof(T), f, AlignOf(T))
+#define M_ArenaPushCopyTNFA(arena, src, T, n, f, a) (T *) M_ArenaPushCopyFrom((arena), (src), (n) * sizeof(T), f, a)
+
+#define M_ArenaPopT(arena, T)     M_ArenaPopSize((arena),       sizeof(T))
+#define M_ArenaPopTN(arena, T, n) M_ArenaPopSize((arena), (n) * sizeof(T))
 
 #if defined(__cplusplus)
 }
@@ -715,6 +859,196 @@ U64 RotateRight_U64(U64 x, U32 count) {
 
 //
 // --------------------------------------------------------------------------------
+// :impl_utilities
+// --------------------------------------------------------------------------------
+//
+
+U32 SaturateCast_U32(U64 value) {
+    U32 result = (value > U32_MAX) ? U32_MAX : cast(U32) value;
+    return result;
+}
+
+U16 SaturateCast_U16(U32 value) {
+    U16 result = (value > U16_MAX) ? U16_MAX : cast(U16) value;
+    return result;
+}
+
+U8 SaturateCast_U8(U16 value) {
+    U8 result = (value > U8_MAX) ? U8_MAX : cast(U8) value;
+    return result;
+}
+
+U32 SafeTruncate_U32(U64 value) {
+    AssertAlways(value <= U32_MAX);
+
+    U32 result = cast(U32) value;
+    return result;
+}
+
+U16 SafeTruncate_U16(U32 value) {
+    AssertAlways(value <= U16_MAX);
+
+    U16 result = cast(U16) value;
+    return result;
+}
+
+U8 SafeTruncate_U8(U16 value) {
+    AssertAlways(value <= U8_MAX);
+
+    U8 result = cast(U8) value;
+    return result;
+}
+
+F32 SafeRatio0_F32(F32 num, F32 denom) {
+    F32 result = 0;
+
+    if (denom < -EPSILON_F32 || denom > EPSILON_F32) {
+        result = num / denom;
+    }
+
+    return result;
+}
+
+F64 SafeRatio0_F64(F64 num, F64 denom) {
+    F64 result = 0;
+
+    if (denom < -EPSILON_F64 || denom > EPSILON_F64) {
+        result = num / denom;
+    }
+
+    return result;
+}
+
+F32 SafeRatio1_F32(F32 num, F32 denom) {
+    F32 result = 1;
+
+    if (denom < -EPSILON_F32 || denom > EPSILON_F32) {
+        result = num / denom;
+    }
+
+    return result;
+}
+
+F64 SafeRatio1_F64(F64 num, F64 denom) {
+    F64 result = 1;
+
+    if (denom < -EPSILON_F64 || denom > EPSILON_F64) {
+        result = num / denom;
+    }
+
+    return result;
+}
+
+U32 NextPow2_U32(U32 value) {
+    U32 result = value;
+
+    result -= 1;
+    result |= (result >> 1);
+    result |= (result >> 2);
+    result |= (result >> 4);
+    result |= (result >> 8);
+    result |= (result >> 16);
+    result += 1;
+
+    return result;
+}
+
+U64 NextPow2_U64(U64 value) {
+    U64 result = value;
+
+    result -= 1;
+    result |= (result >> 1);
+    result |= (result >> 2);
+    result |= (result >> 4);
+    result |= (result >> 8);
+    result |= (result >> 16);
+    result |= (result >> 32);
+    result += 1;
+
+    return result;
+}
+
+U32 PrevPow2_U32(U32 value) {
+    U32 result = NextPow2_U32(value) >> 1;
+    return result;
+}
+
+U64 PrevPow2_U64(U64 value) {
+    U64 result = NextPow2_U64(value) >> 1;
+    return result;
+}
+
+U32 NearestPow2_U32(U32 value) {
+    U32 next = NextPow2_U32(value);
+    U32 prev = next >> 1;
+
+    U32 result = ((next - value) < (value - prev)) ? next : prev;
+    return result;
+}
+
+U64 NearestPow2_U64(U64 value) {
+    U64 next = NextPow2_U64(value);
+    U64 prev = next >> 1;
+
+    U64 result = ((next - value) < (value - prev)) ? next : prev;
+    return result;
+}
+
+void *M_CopySize(void *dst, void *src, U64 size) {
+    void *result = dst;
+
+    U8 *dst8 = cast(U8 *) dst;
+    U8 *src8 = cast(U8 *) src;
+
+    while (size--) {
+        *dst8++ = *src8++;
+    }
+
+    return result;
+}
+
+void *M_FillSize(void *dst, U8 value, U64 size) {
+    void *result = dst;
+
+    U8 *dst8 = cast(U8 *) dst;
+
+    while (size--) {
+        *dst8++ = value;
+    }
+
+    return result;
+}
+
+void *M_ZeroSize(void *dst, U64 size) {
+    void *result = dst;
+
+    U8 *dst8 = cast(U8 *) dst;
+
+    while (size--) {
+        *dst8++ = 0;
+    }
+
+    return result;
+}
+
+B32 M_CompareSize(void *a, void *b, U64 size) {
+    B32 result = true;
+
+    U8 *a8 = cast(U8 *) a;
+    U8 *b8 = cast(U8 *) b;
+
+    while (size--) {
+        if (*a8++ != *b8++) {
+            result = false;
+            break;
+        }
+    }
+
+    return result;
+}
+
+//
+// --------------------------------------------------------------------------------
 // :impl_arena
 // --------------------------------------------------------------------------------
 //
@@ -768,15 +1102,19 @@ U64 OS_GetAllocationGranularity() {
 
 #define M_ARENA_MIN_OFFSET sizeof(M_Arena)
 
-#if !defined(M_ARENA_DEFAULT_COMMIT_SIZE)
-    #define M_ARENA_DEFAULT_COMMIT_SIZE KB(64)
+#if !defined(M_ARENA_COMMIT_SIZE)
+    #define M_ARENA_COMMIT_SIZE KB(64)
 #endif
 
 #if !defined(M_ARENA_MAX_RESERVE_SWITCH)
     #define M_ARENA_MAX_RESERVE_SWITCH MB(8)
 #endif
 
-internal M_Arena *__M_AllocSizedArena(U64 limit, U64 commit, M_ArenaFlags flags) {
+#if !defined(M_ARENA_GROW_RESERVE_SIZE)
+    #define M_ARENA_GROW_RESERVE_SIZE MB(1)
+#endif
+
+internal M_Arena *__M_AllocSizedArena(U64 limit, U64 initial_commit, M_ArenaFlags flags) {
     M_Arena *result = 0;
 
     U64 page_size   = OS_GetPageSize();
@@ -784,8 +1122,8 @@ internal M_Arena *__M_AllocSizedArena(U64 limit, U64 commit, M_ArenaFlags flags)
 
     // have at least the allocation granularity to reserve and at least the page size to commit
     //
-    U64 to_reserve = Max(AlignUp(limit,  granularity), granularity);
-    U64 to_commit  = Max(AlignUp(commit, page_size), page_size);
+    U64 to_reserve = Max(AlignUp(limit, granularity), granularity);
+    U64 to_commit  = Clamp(page_size, AlignUp(initial_commit, page_size), to_reserve);
 
     void *base = OS_ReserveMemory(to_reserve);
     if (base != 0) {
@@ -800,8 +1138,7 @@ internal M_Arena *__M_AllocSizedArena(U64 limit, U64 commit, M_ArenaFlags flags)
             result->offset      = M_ARENA_MIN_OFFSET;
             result->last_offset = M_ARENA_MIN_OFFSET;
 
-            result->committed   = to_commit;
-            result->commit_size = to_commit;
+            result->committed = to_commit;
 
             result->flags = flags;
         }
@@ -812,7 +1149,7 @@ internal M_Arena *__M_AllocSizedArena(U64 limit, U64 commit, M_ArenaFlags flags)
     return result;
 }
 
-M_Arena *M_AllocArenaArgs(U64 limit, U64 commit, M_ArenaFlags flags) {
+M_Arena *M_AllocArenaArgs(U64 limit, U64 initial_commit, M_ArenaFlags flags) {
 #if OS_SWITCH
     // :note ~switchbrew
     //
@@ -827,12 +1164,12 @@ M_Arena *M_AllocArenaArgs(U64 limit, U64 commit, M_ArenaFlags flags) {
     limit  = Min(limit, M_ARENA_MAX_RESERVE_SWITCHBREW);
 #endif
 
-    M_Arena *result = __M_AllocSizedArena(limit, commit, flags);
+    M_Arena *result = __M_AllocSizedArena(limit, initial_commit, flags);
     return result;
 }
 
 M_Arena *M_AllocArena(U64 limit) {
-    M_Arena *result = M_AllocArenaArgs(limit, M_ARENA_DEFAULT_COMMIT_SIZE, 0);
+    M_Arena *result = M_AllocArenaArgs(limit, M_ARENA_COMMIT_SIZE, 0);
     return result;
 }
 
@@ -848,16 +1185,16 @@ void M_ResetArena(M_Arena *arena) {
     }
 
     Assert(current == arena);
-    Assert(current->committed >= current->commit_size);
+    Assert(current->committed >= M_ARENA_COMMIT_SIZE);
 
-    void *decommit_base = cast(U8 *) current + current->commit_size;
-    U64   decommit_size = current->committed - current->commit_size;
+    void *decommit_base = cast(U8 *) current + M_ARENA_COMMIT_SIZE;
+    U64   decommit_size = current->committed - M_ARENA_COMMIT_SIZE;
 
     if (decommit_size != 0) { OS_DecommitMemory(decommit_base, decommit_size); }
 
     current->offset      = M_ARENA_MIN_OFFSET;
     current->last_offset = M_ARENA_MIN_OFFSET;
-    current->committed   = arena->commit_size;
+    current->committed   = M_ARENA_COMMIT_SIZE;
 
     arena->current = current;
 }
@@ -874,7 +1211,166 @@ void M_ReleaseArena(M_Arena *arena) {
     }
 }
 
+void *M_ArenaPushFrom(M_Arena *arena, U64 size, M_ArenaFlags flags, U64 alignment) {
+    void *result = 0;
 
+    M_Arena *current = arena->current;
+
+    alignment  = Clamp(1, alignment, 4096);
+    U64 offset = AlignUp(current->offset, alignment);
+    U64 end    = offset + size;
+
+    if (end > current->limit) {
+        // not enough space in current arena so allocate a new one if growing is permitted
+        //
+        if ((arena->flags & M_ARENA_DONT_GROW) == 0) {
+            U64 reserve   = Max(size + M_ARENA_MIN_OFFSET, M_ARENA_GROW_RESERVE_SIZE);
+            M_Arena *next = __M_AllocSizedArena(reserve, M_ARENA_COMMIT_SIZE, 0);
+
+            next->base = current->base + current->limit;
+
+            SLL_PushN(arena->current, next, prev);
+
+            current = next;
+            offset  = AlignUp(current->offset, alignment);
+            end     = offset + size;
+        }
+    }
+
+    if (end > current->committed) {
+        void *commit_base = cast(U8 *) current + current->committed;
+        U64 commit_offset = AlignUp(end, M_ARENA_COMMIT_SIZE);
+        U64 commit_limit  = Min(commit_offset, current->limit);
+        U64 commit_size   = commit_limit - current->committed;
+
+        if (OS_CommitMemory(commit_base, commit_size)) { current->committed = commit_limit; }
+    }
+
+    if (current->committed >= end) {
+        // we have managed to commit enough space for the allocation
+        //
+        result = cast(U8 *) current + offset;
+
+        current->last_offset = current->offset;
+        current->offset      = end;
+
+        if ((flags & M_ARENA_NO_ZERO) == 0) { M_ZeroSize(result, size); }
+    }
+
+    Assert(result != 0);
+    Assert(((U64) result & (alignment - 1)) == 0);
+
+    return result;
+}
+
+void *M_ArenaPushCopyFrom(M_Arena *arena, void *src, U64 size, M_ArenaFlags flags, U64 alignment) {
+    void *result = M_CopySize(M_ArenaPushFrom(arena, size, flags, alignment), src, size);
+    return result;
+}
+
+U64 M_GetArenaOffset(M_Arena *arena) {
+    M_Arena *current = arena->current;
+
+    U64 result = (current->base + current->offset);
+    return result;
+}
+
+void M_ArenaPopTo(M_Arena *arena, U64 offset) {
+    M_Arena *current = arena->current;
+
+    while (current->base > offset) {
+        void *base = cast(void *) current;
+        U64   size = current->limit;
+
+        current = current->prev;
+
+        OS_ReleaseMemory(base, size);
+    }
+
+    Assert(current != 0);
+
+    U64 local_offset = Max(offset - current->base, M_ARENA_MIN_OFFSET);
+
+    Assert(local_offset <= current->offset);
+
+    // as we have popped back explicitly the 'last_offset' is no longer valid so
+    // set that to this offset thus calling 'pop last' after manually setting the offset
+    // doesn't do anything
+    //
+    current->offset      = local_offset;
+    current->last_offset = local_offset;
+
+    arena->current = current;
+}
+
+void M_ArenaPopSize(M_Arena *arena, U64 size) {
+    U64 offset = M_GetArenaOffset(arena);
+
+    // explicitly greater than because the arena takes some space for its header
+    // information
+    //
+    Assert(offset > size);
+
+    M_ArenaPopTo(arena, offset - size);
+}
+
+void M_ArenaPopLast(M_Arena *arena) {
+    M_Arena *current = arena->current;
+
+    // We know the last offset cannot span multiple arenas even with chained growth
+    // because single push allocations must be contiguous and thus be contained in a
+    // single arena
+    //
+    // this means popping the last allocation is a simple move of the offset
+    //
+    current->offset = current->last_offset;
+}
+
+// thread-local temporary arenas
+//
+#if !defined(M_TEMP_ARENA_COUNT)
+    #define M_TEMP_ARENA_COUNT 2
+#endif
+
+#if !defined(M_TEMP_ARENA_RESERVE_SIZE)
+    #define M_TEMP_ARENA_RESERVE_SIZE GB(4)
+#endif
+
+global_var thread_var M_Arena *__tls_temp[M_TEMP_ARENA_COUNT];
+
+M_Temp M_GetTemp(U32 count, M_Arena **conflicts) {
+    M_Temp result;
+
+    result.arena  = 0;
+    result.offset = 0;
+
+    for (U32 t = 0; t < M_TEMP_ARENA_COUNT; ++t) {
+        if (!__tls_temp[t]) { __tls_temp[t] = M_AllocArena(M_TEMP_ARENA_RESERVE_SIZE); }
+
+        M_Arena *arena = __tls_temp[t];
+        for (U32 c = 0; c < count; ++c) {
+            if (conflicts[c] == arena) {
+                arena = 0;
+                break;
+            }
+        }
+
+        if (arena) {
+            result.arena  = arena;
+            result.offset = M_GetArenaOffset(arena);
+
+            break;
+        }
+    }
+
+    Assert(result.arena != 0);
+
+    return result;
+}
+
+void M_ReleaseTemp(M_Temp temp) {
+    M_ArenaPopTo(temp.arena, temp.offset);
+}
 
 #endif  // CORE_C_
 
