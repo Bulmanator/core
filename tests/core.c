@@ -1,3 +1,6 @@
+// for coverage in formatting
+// #define STR8_INITIAL_FORMAT_GUESS_SIZE 16
+
 #define CORE_MODULE
 #include "core.h"
 
@@ -11,8 +14,11 @@ struct ListNode {
     int value;
 };
 
-#define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); Assert((a) == (v)); printf(" ... passed\n");
-#define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); Assert((a) == (v)); printf(" ... passed\n");
+#define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); Assert((a) == (v)); printf(" ... passed\n")
+#define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); Assert((a) == (v)); printf(" ... passed\n")
+#define ExpectStrValue(a, v) printf("    Testing... %s == %s", #a, v); Assert(Str8_Equal(a, Sz(v), 0)); printf("... passed\n")
+#define ExpectTrue(a) printf("    Testing... %s == true", #a); Assert(a); printf("... passed\n")
+#define ExpectFalse(a) printf("    Testing... %s == false", #a); Assert(!(a)); printf("... passed\n")
 
 static int ExecuteTests(int argc, char **argv) {
     // ... do nothing for now
@@ -41,11 +47,6 @@ static int ExecuteTests(int argc, char **argv) {
         ExpectIntValue(ArraySize(arr), 12);
         ExpectIntValue(OffsetTo(ListNode, prev), 8);
         ExpectIntValue(AlignOf(U32), 4);
-
-        //printf("  Truncated value of 1.234f = %u\n", cast(U32) 1.234f);
- //       printf("  ArraySize(arr) = %llu\n", ArraySize(arr));
- //       printf("  OffsetTo(ListNode, prev) = %llu\n", OffsetTo(ListNode, prev));
- //       printf("  AlignOf(U32) = %llu\n", AlignOf(U32));
     }
     printf("\n");
 
@@ -207,19 +208,19 @@ static int ExecuteTests(int argc, char **argv) {
 
         volatile U32 v8 = 10;
 
-        ExpectIntValue(AtomicCompareExchange_U32(&v8, 100, 10), (B32) true);
-        ExpectIntValue(AtomicCompareExchange_U32(&v8, 20,  10), (B32) false);
+        ExpectTrue(AtomicCompareExchange_U32(&v8, 100, 10));
+        ExpectFalse(AtomicCompareExchange_U32(&v8, 20,  10));
         ExpectIntValue(v8, 100);
 
         volatile U64 v9 = 2020;
-        ExpectIntValue(AtomicCompareExchange_U64(&v9, 4040, 2020), (B32) true);
-        ExpectIntValue(AtomicCompareExchange_U64(&v9, 10,   2020), (B32) false);
+        ExpectTrue(AtomicCompareExchange_U64(&v9, 4040, 2020));
+        ExpectFalse(AtomicCompareExchange_U64(&v9, 10,   2020));
         ExpectIntValue(v9, 4040);
 
         void *v10 = (void *) 0x10101010;
 
-        ExpectIntValue(AtomicCompareExchange_Ptr(&v10, (void *) 0x20202020, (void *) 0x10101010), (B32) true);
-        ExpectIntValue(AtomicCompareExchange_Ptr(&v10, (void *) 0x30303030, (void *) 0x10101010), (B32) false);
+        ExpectTrue(AtomicCompareExchange_Ptr(&v10, (void *) 0x20202020, (void *) 0x10101010));
+        ExpectFalse(AtomicCompareExchange_Ptr(&v10, (void *) 0x30303030, (void *) 0x10101010));
         ExpectIntValue((U64) v10, 0x20202020);
     }
     printf("\n");
@@ -330,12 +331,12 @@ static int ExecuteTests(int argc, char **argv) {
 
         U32 *b = M_ArenaPushCopy(arena, a, U32, 10);
 
-        ExpectIntValue(M_CompareSize(a, b, 10 * sizeof(U32)), (U64) true);
+        ExpectTrue(M_CompareSize(a, b, 10 * sizeof(U32)));
 
         M_Temp tempa = M_GetTemp(0, 0);
         M_Temp tempb = M_GetTemp(1, &tempa.arena);
 
-        ExpectIntValue(tempa.arena != tempb.arena, (U64) true);
+        ExpectTrue(tempa.arena != tempb.arena);
 
         M_ArenaPush(tempa.arena, U32, 256);
         M_ReleaseTemp(tempa);
@@ -351,6 +352,104 @@ static int ExecuteTests(int argc, char **argv) {
         // should cause an access violation
         //
         // printf("current offset = %llu\n", arena->offset);
+    }
+    printf("\n");
+
+    printf("-- Strings\n");
+    {
+        Str8 test = S("Some/path/with/file.txt");
+
+        Str8 before_first = Str8_RemoveBeforeFirst(test, '/');
+        Str8 before_last  = Str8_RemoveBeforeLast(test, '/');
+
+        Str8 after_first = Str8_RemoveAfterFirst(test, '/');
+        Str8 after_last  = Str8_RemoveAfterLast(test, '/');
+
+        ExpectStrValue(before_first, "path/with/file.txt");
+        ExpectStrValue(before_last,  "file.txt");
+        ExpectStrValue(after_first,  "Some");
+        ExpectStrValue(after_last,   "Some/path/with");
+
+        Str8 dirname  = Str8_GetDirname(test);
+        Str8 basename = Str8_GetBasename(test);
+        Str8 ext      = Str8_GetExtension(test);
+
+        Str8 noext = Str8_StripExtension(basename);
+
+        ExpectStrValue(dirname,  "Some/path/with");
+        ExpectStrValue(basename, "file.txt");
+        ExpectStrValue(ext,      "txt");
+        ExpectStrValue(noext,    "file");
+
+        Str8 hira_a = Sl("\xE3\x81\x82");
+
+        Codepoint c = Utf8_Decode(hira_a);
+
+        ExpectIntValue(c.count, 3);
+        ExpectIntValue(c.value, 0x3042);
+
+        U8 value[4] = { 0 };
+        U32 count = Utf8_Encode(value, c.value);
+
+        ExpectIntValue(count, 3);
+        ExpectIntValue(*(U32 *) value, 0x8281e3);
+
+        M_Temp temp = M_GetTemp(0, 0);
+        Str8 cpy = Str8_Copy(temp.arena, test);
+        ExpectStrValue(cpy, "Some/path/with/file.txt");
+
+        Str8 con = Str8_Concat(temp.arena, noext, ext);
+        ExpectStrValue(con, "filetxt");
+
+        Str8 range = Str8_WrapRange(dirname.data, dirname.data + 4);
+        ExpectStrValue(range, "Some");
+
+        Str8 formatted = Sf(temp.arena, "Hello, %s! %d With a REALLY LONG ENDING", "Sailor", 69105);
+        ExpectStrValue(formatted, "Hello, Sailor! 69105 With a REALLY LONG ENDING");
+
+        Str8 advanced = Str8_Advance(test, 5);
+        Str8 removed  = Str8_Remove(test,  9);
+        Str8 sliced   = Str8_Slice(test, 5, 9);
+
+        ExpectStrValue(advanced, "path/with/file.txt");
+        ExpectStrValue(removed,  "Some/path/with");
+        ExpectStrValue(sliced,   "path");
+
+        M_ReleaseTemp(temp);
+    }
+    printf("\n");
+
+    printf("-- Characters\n");
+    {
+        ExpectTrue(Chr_IsWhitespace(' '));
+        ExpectTrue(Chr_IsWhitespace('\n'));
+        ExpectFalse(Chr_IsWhitespace('d'));
+
+        ExpectTrue(Chr_IsAlpha('a'));
+        ExpectTrue(Chr_IsAlpha('p'));
+        ExpectTrue(Chr_IsAlpha('I'));
+
+        ExpectFalse(Chr_IsAlpha(';'));
+        ExpectFalse(Chr_IsAlpha(','));
+
+        ExpectTrue(Chr_IsHex('0'));
+        ExpectTrue(Chr_IsHex('7'));
+        ExpectTrue(Chr_IsHex('a'));
+        ExpectTrue(Chr_IsHex('F'));
+
+        ExpectFalse(Chr_IsHex('i'));
+        ExpectFalse(Chr_IsHex('p'));
+
+        ExpectTrue(Chr_IsSlash('/'));
+        ExpectTrue(Chr_IsSlash('\\'));
+
+        ExpectTrue(Chr_IsPathSeparator('/'));
+#if OS_WINDOWS
+        ExpectTrue(Chr_IsPathSeparator('\\'));
+#endif
+
+        ExpectIntValue(Chr_ToUppercase('a'), 'A');
+        ExpectIntValue(Chr_ToLowercase('A'), 'a');
     }
     printf("\n");
 

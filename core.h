@@ -20,6 +20,7 @@ extern "C" {
 //     - :intrinsics | cpu or compiler level builtins
 //     - :utilities  | some basic utility functions
 //     - :arena      | memory arena implementation
+//     - :strings    | counted string helpers
 //
 // This header can be included in one of three ways:
 //     1. As a standalone header by simply including the header with no specific pre-defines. This is
@@ -622,6 +623,97 @@ function void M_ReleaseTemp(M_Temp temp);
 
 #define M_ArenaPopT(arena, T)     M_ArenaPopSize((arena),       sizeof(T))
 #define M_ArenaPopTN(arena, T, n) M_ArenaPopSize((arena), (n) * sizeof(T))
+
+//
+// --------------------------------------------------------------------------------
+// :strings
+// --------------------------------------------------------------------------------
+//
+#include <stdarg.h>
+
+// utility macros for wrapping string literals, struct pointers and expanding as arguments
+//
+#define S(x) Str8_Wrap(sizeof(x) - sizeof(*(x)), (U8 *) (x))
+#define Sz(x) Str8_WrapZ((U8 *) (x))
+#define Sl(x) { sizeof(x) - sizeof(*(x)), (U8 *) (x) }
+#define Ss(x) { sizeof(*(x)), (U8 *) (x) }
+#define Sv(x) (int) (x).count, (x).data
+#define Sf(arena, format, ...) Str8_Format((arena), (format), ##__VA_ARGS__)
+
+function Str8 Str8_Wrap(S64 count, U8 *data);
+function Str8 Str8_WrapZ(U8 *zstr); // null-terminated
+function Str8 Str8_WrapRange(U8 *start, U8 *end);
+
+// will be null-terminated
+//
+function Str8 Str8_Copy(M_Arena *arena, Str8 str);
+function Str8 Str8_Concat(M_Arena *arena, Str8 a, Str8 b);
+
+// string equality
+//
+typedef U32 Str8_EqualFlags;
+enum {
+    STR8_EQUAL_FLAG_IGNORE_CASE = (1 << 0),
+    STR8_EQUAL_FLAG_INEXACT_RHS = (1 << 1)
+};
+
+function B32 Str8_Equal(Str8 a, Str8 b, Str8_EqualFlags flags);
+
+// string formatting
+//
+function Str8 Str8_FormatArgs(M_Arena *arena, const char *format, va_list args);
+function Str8 Str8_Format(M_Arena *arena, const char *format, ...);
+
+// string slicing, all counts are in bytes
+//
+function Str8 Str8_Prefix(Str8 str, S64 count);
+function Str8 Str8_Suffix(Str8 str, S64 count);
+function Str8 Str8_Advance(Str8 str, S64 count);
+function Str8 Str8_Remove(Str8 str, S64 count);
+function Str8 Str8_Slice(Str8 str, S64 start, S64 end);
+
+// these are ascii only and are meant to be used with char literals
+//
+// including the found character, returns 'str' if 'chr' is not found
+//
+function Str8 Str8_RemoveAfterFirst(Str8 str, U8 chr);
+function Str8 Str8_RemoveAfterLast(Str8 str, U8 chr);
+
+function Str8 Str8_RemoveBeforeFirst(Str8 str, U8 chr);
+function Str8 Str8_RemoveBeforeLast(Str8 str, U8 chr);
+
+// these work with both forward and backslash separators on windows, forward slash only on other platforms.
+//
+function Str8 Str8_GetBasename(Str8 path);  // includes extension
+function Str8 Str8_GetDirname(Str8 path);   // excludes trailing separator
+function Str8 Str8_GetExtension(Str8 path); // gives shortest extension excluding separating '.'
+
+function Str8 Str8_StripExtension(Str8 path); // removes separating '.'
+
+// utf-8 unicode handling
+//
+typedef struct Codepoint Codepoint;
+struct Codepoint {
+    U32 count; // number of bytes used to encode/decode
+    U32 value;
+};
+
+function Codepoint Utf8_Decode(Str8 str);
+function U32 Utf8_Encode(U8 *output, U32 codepoint); // output expects enough space for the encoded codepoint
+
+// character utilities
+//
+function B32 Chr_IsWhitespace(U8 c);
+function B32 Chr_IsAlpha(U8 c);
+function B32 Chr_IsUppercase(U8 c);
+function B32 Chr_IsLowercase(U8 c);
+function B32 Chr_IsNumber(U8 c);
+function B32 Chr_IsHex(U8 c);
+function B32 Chr_IsSlash(U8 c); // checks for forward and backward slashes
+function B32 Chr_IsPathSeparator(U8 c); // checks for fwd/bkwd on windows, only fwd on other platforms
+
+function U8 Chr_ToUppercase(U8 c);
+function U8 Chr_ToLowercase(U8 c);
 
 #if defined(__cplusplus)
 }
@@ -1287,18 +1379,16 @@ void M_ArenaPopTo(M_Arena *arena, U64 offset) {
         OS_ReleaseMemory(base, size);
     }
 
-    Assert(current != 0);
-
     U64 local_offset = Max(offset - current->base, M_ARENA_MIN_OFFSET);
 
-    Assert(local_offset <= current->offset);
-
-    // as we have popped back explicitly the 'last_offset' is no longer valid so
-    // set that to this offset thus calling 'pop last' after manually setting the offset
-    // doesn't do anything
-    //
-    current->offset      = local_offset;
-    current->last_offset = local_offset;
+    if (local_offset <= current->offset) {
+        // as we have popped back explicitly the 'last_offset' is no longer valid so
+        // set that to this offset thus calling 'pop last' after manually setting the offset
+        // doesn't do anything
+        //
+        current->offset      = local_offset;
+        current->last_offset = local_offset;
+    }
 
     arena->current = current;
 }
@@ -1309,9 +1399,9 @@ void M_ArenaPopSize(M_Arena *arena, U64 size) {
     // explicitly greater than because the arena takes some space for its header
     // information
     //
-    Assert(offset > size);
-
-    M_ArenaPopTo(arena, offset - size);
+    if (offset > size) {
+        M_ArenaPopTo(arena, offset - size);
+    }
 }
 
 void M_ArenaPopLast(M_Arena *arena) {
@@ -1370,6 +1460,450 @@ M_Temp M_GetTemp(U32 count, M_Arena **conflicts) {
 
 void M_ReleaseTemp(M_Temp temp) {
     M_ArenaPopTo(temp.arena, temp.offset);
+}
+
+//
+// --------------------------------------------------------------------------------
+// :impl_strings
+// --------------------------------------------------------------------------------
+//
+
+Str8 Str8_Wrap(S64 count, U8 *data) {
+    Str8 result;
+    result.count = count;
+    result.data  = data;
+
+    return result;
+}
+
+internal S64 CountLengthZ(U8 *zstr) {
+    S64 result = 0;
+
+    while (zstr[result]) {
+        result += 1;
+    }
+
+    return result;
+}
+
+Str8 Str8_WrapZ(U8 *zstr) {
+    Str8 result;
+    result.count = CountLengthZ(zstr);
+    result.data  = zstr;
+
+    return result;
+}
+
+Str8 Str8_WrapRange(U8 *start, U8 *end) {
+    Str8 result;
+
+    Assert(start <= end);
+
+    result.count = cast(S64) (end - start);
+    result.data  = start;
+
+    return result;
+}
+
+// will be null-terminated
+//
+Str8 Str8_Copy(M_Arena *arena, Str8 str) {
+    Str8 result;
+    result.count = str.count;
+    result.data  = cast(U8 *) M_CopySize(M_ArenaPush(arena, U8, str.count + 1), str.data, str.count);
+
+    return result;
+}
+
+Str8 Str8_Concat(M_Arena *arena, Str8 a, Str8 b) {
+    Str8 result;
+    result.count = (a.count + b.count);
+    result.data  = M_ArenaPush(arena, U8, result.count + 1);
+
+    M_CopySize(result.data          , a.data, a.count);
+    M_CopySize(result.data + a.count, b.data, b.count);
+
+    return result;
+}
+
+// string equality
+//
+B32 Str8_Equal(Str8 a, Str8 b, Str8_EqualFlags flags) {
+    B32 result;
+
+    B32 ignore_case = (flags & STR8_EQUAL_FLAG_IGNORE_CASE) != 0;
+    B32 inexact_rhs = (flags & STR8_EQUAL_FLAG_INEXACT_RHS) != 0;
+
+    result = (a.count == b.count) || inexact_rhs;
+
+    if (result) {
+        S64 count = Min(a.count, b.count);
+
+        for (S64 it = 0; it < count; ++it) {
+            U8 ca, cb;
+            if (ignore_case) {
+                ca = Chr_ToUppercase(a.data[it]);
+                cb = Chr_ToUppercase(b.data[it]);
+            }
+            else {
+                ca = a.data[it];
+                cb = b.data[it];
+            }
+
+            if (ca != cb) {
+                result = false;
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
+// @todo: probably want to move away from vsnprintf to allow us to have custom type printing etc.
+//
+#include <stdio.h> // vsnprintf
+
+#if !defined(STR8_INITIAL_FORMAT_GUESS_SIZE)
+    #define STR8_INITIAL_FORMAT_GUESS_SIZE 1024
+#endif
+
+internal S64 Str8_ProcessFormat(U8 *buffer, S64 count, const char *format, va_list args) {
+    S64 result = vsnprintf((char *) buffer, count, format, args);
+    return result;
+}
+
+Str8 Str8_FormatArgs(M_Arena *arena, const char *format, va_list args) {
+    Str8 result;
+
+    va_list copy;
+    va_copy(copy, args);
+
+    S64 buffer_size = STR8_INITIAL_FORMAT_GUESS_SIZE;
+    U8 *buffer      = M_ArenaPush(arena, U8, buffer_size);
+
+    S64 count = Str8_ProcessFormat(buffer, buffer_size, format, args);
+    if (count >= buffer_size) {
+        // not enough space in the initial guess so pop the entire buffer, push the correct size and
+        // process format again
+        //
+        M_ArenaPopLast(arena);
+
+        result.count = count;
+        result.data  = M_ArenaPush(arena, U8, result.count + 1);
+
+        Str8_ProcessFormat(result.data, result.count + 1, format, copy);
+    }
+    else if (count < 0) {
+        // error occurred
+        //
+        result.count = 0;
+        result.data  = 0;
+    }
+    else {
+        // initial size was enough, pop any unused portion of the initial buffer
+        //
+        result.count = count;
+        result.data  = buffer;
+
+        // we keep the null-terminating byte
+        //
+        M_ArenaPopSize(arena, buffer_size - count - 1);
+    }
+
+    return result;
+}
+
+Str8 Str8_Format(M_Arena *arena, const char *format, ...) {
+    Str8 result;
+
+    va_list args;
+    va_start(args, format);
+
+    result = Str8_FormatArgs(arena, format, args);
+
+    va_end(args);
+
+    return result;
+}
+
+// string slicing, all counts are in bytes
+//
+Str8 Str8_Prefix(Str8 str, S64 count) {
+    Str8 result;
+    result.count = Min(str.count, count);
+    result.data  = str.data;
+
+    return result;
+}
+
+Str8 Str8_Suffix(Str8 str, S64 count) {
+    Str8 result;
+    result.count = Min(str.count, count);
+    result.data  = str.data + (str.count - result.count);
+
+    return result;
+}
+
+Str8 Str8_Advance(Str8 str, S64 count) {
+    Str8 result;
+    result.count = str.count - Min(str.count, count);
+    result.data  = str.data  + Min(str.count, count);
+
+    return result;
+}
+
+Str8 Str8_Remove(Str8 str, S64 count) {
+    Str8 result;
+    result.count = str.count - Min(str.count, count);
+    result.data  = str.data;
+
+    return result;
+}
+
+Str8 Str8_Slice(Str8 str, S64 start, S64 end) {
+    Str8 result;
+
+    Assert(start <= end);
+
+    result.count = Min(str.count, end - start);
+    result.data  = str.data + Min(str.count, start);
+
+    return result;
+}
+
+// these are ascii only and are meant to be used with char literals
+//
+// including the found character
+//
+Str8 Str8_RemoveAfterFirst(Str8 str, U8 chr) {
+    Str8 result = str;
+
+    for (S64 it = 0; it < str.count; ++it) {
+        if (str.data[it] == chr) {
+            result = Str8_Prefix(str, it);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_RemoveAfterLast(Str8 str, U8 chr) {
+    Str8 result = str;
+
+    for (S64 it = str.count - 1; it >= 0; --it) {
+        if (str.data[it] == chr) {
+            result = Str8_Prefix(str, it);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_RemoveBeforeFirst(Str8 str, U8 chr) {
+    Str8 result = str;
+
+    for (S64 it = 0; it < str.count; ++it) {
+        if (str.data[it] == chr) {
+            result = Str8_Suffix(str, str.count - it - 1);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_RemoveBeforeLast(Str8 str, U8 chr) {
+    Str8 result = str;
+
+    for (S64 it = str.count - 1; it >= 0; --it) {
+        if (str.data[it] == chr) {
+            result = Str8_Suffix(str, str.count - it - 1);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_GetBasename(Str8 path) {
+    Str8 result = path;
+
+    for (S64 it = path.count - 1; it >= 0; --it) {
+        if (Chr_IsPathSeparator(path.data[it])) {
+            result = Str8_Suffix(path, path.count - it - 1);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_GetDirname(Str8 path) {
+    Str8 result = Sl("."); // if a path separator isn't found, use 'current working directory'
+
+    for (S64 it = path.count - 1; it >= 0; --it) {
+        if (Chr_IsPathSeparator(path.data[it])) {
+            result = Str8_Prefix(path, it);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_GetExtension(Str8 path) {
+    Str8 result = Sl(""); // if '.' is not found, no extension
+
+    for (S64 it = path.count - 1; it >= 0; --it) {
+        if (path.data[it] == '.') {
+            result = Str8_Suffix(path, path.count - it - 1);
+            break;
+        }
+    }
+
+    return result;
+}
+
+Str8 Str8_StripExtension(Str8 path) {
+    Str8 result = path;
+
+    for (S64 it = path.count - 1; it >= 0; --it) {
+        if (path.data[it] == '.') {
+            result = Str8_Prefix(path, it);
+            break;
+        }
+    }
+
+    return result;
+}
+
+// return true if successfully encoded/decoded, false if an error occurred
+//
+Codepoint Utf8_Decode(Str8 str) {
+    Codepoint result;
+
+    local_persist const U8 lengths[] = {
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0
+    };
+
+    local_persist const U32 masks[] = { 0x00, 0x7F, 0x1F, 0x0F, 0x07 };
+
+    if (str.count > 0) {
+        U8 *data = str.data;
+
+        U32 len   = lengths[data[0] >> 3];
+        U32 avail = cast(U32) Min(len, str.count);
+
+        U32 codepoint = data[0] & masks[len];
+
+        for (U32 it = 1; it < avail; ++it) {
+            codepoint <<= 6;
+            codepoint  |= (data[it] & 0x3F);
+        }
+
+        result.value = codepoint;
+        result.count = avail; // don't go past the end of the string, may produce invalid codepoints
+    }
+    else {
+        result.value = '?';
+        result.count =  1 ;
+    }
+
+    return result;
+}
+
+U32 Utf8_Encode(U8 *output, U32 codepoint) {
+    U32 result;
+
+    if (codepoint <= 0x7F) {
+        output[0] = cast(U8) codepoint;
+        result    = 1;
+    }
+    else if (codepoint <= 0x7FF) {
+        output[0] = ((codepoint >> 6) & 0x1F) | 0xC0;
+        output[1] = ((codepoint >> 0) & 0x3F) | 0x80;
+        result    = 2;
+    }
+    else if (codepoint <= 0xFFFF) {
+        output[0] = ((codepoint >> 12) & 0x0F) | 0xE0;
+        output[1] = ((codepoint >>  6) & 0x3F) | 0x80;
+        output[2] = ((codepoint >>  0) & 0x3F) | 0x80;
+        result    = 3;
+    }
+    else if (codepoint <= 0x10FFFF) {
+        output[0] = ((codepoint >> 18) & 0x07) | 0xF0;
+        output[1] = ((codepoint >> 12) & 0x3F) | 0x80;
+        output[2] = ((codepoint >>  6) & 0x3F) | 0x80;
+        output[3] = ((codepoint >>  0) & 0x3F) | 0x80;
+        result    = 4;
+    }
+    else {
+        output[0] = '?';
+        result    =  1 ;
+    }
+
+    return result;
+}
+
+// character utilities
+//
+B32 Chr_IsWhitespace(U8 c) {
+    B32 result = (c == ' ') || (c == '\n') || (c == '\r') || (c == '\t') || (c == '\f') || (c == '\v');
+    return result;
+}
+
+B32 Chr_IsAlpha(U8 c) {
+    B32 result = Chr_IsUppercase(c) || Chr_IsLowercase(c);
+    return result;
+}
+
+B32 Chr_IsUppercase(U8 c) {
+    B32 result = (c >= 'A' && c <= 'Z');
+    return result;
+}
+
+B32 Chr_IsLowercase(U8 c) {
+    B32 result = (c >= 'a' && c <= 'z');
+    return result;
+}
+
+B32 Chr_IsNumber(U8 c) {
+    B32 result = (c >= '0' && c <= '9');
+    return result;
+}
+
+B32 Chr_IsHex(U8 c) {
+    B32 result = Chr_IsNumber(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    return result;
+}
+
+B32 Chr_IsSlash(U8 c) {
+    B32 result = (c == '/') || (c == '\\');
+    return result;
+}
+
+B32 Chr_IsPathSeparator(U8 c) {
+#if OS_WINDOWS
+    B32 result = (c == '/') || (c == '\\');
+#else
+    B32 result = (c == '/');
+#endif
+
+    return result;
+}
+
+U8 Chr_ToUppercase(U8 c) {
+    U8 result = Chr_IsLowercase(c) ? (c - ('a' - 'A')) : c;
+    return result;
+}
+
+U8 Chr_ToLowercase(U8 c) {
+    U8 result = Chr_IsUppercase(c) ? (c + ('a' - 'A')) : c;
+    return result;
 }
 
 #endif  // CORE_C_
