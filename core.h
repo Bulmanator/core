@@ -1187,9 +1187,90 @@ U64 OS_GetAllocationGranularity() {
 #elif OS_MACOS
 #error "macOS memory subsystem not implemented"
 #elif OS_LINUX
-#error "linux memory subsystem not implemented"
+#include <sys/mman.h>
+#include <unistd.h>
+
+#if !defined(MAP_ANON)
+    #define MAP_ANON MAP_ANONYMOUS
+#endif
+
+void *OS_ReserveMemory(U64 size) {
+    void *ptr = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+
+    void *result = (ptr == MAP_FAILED) ? 0 : ptr;
+    return result;
+}
+
+B32 OS_CommitMemory(void *base, U64 size) {
+    B32 result = mprotect(base, size, PROT_READ | PROT_WRITE) == 0;
+    return result;
+}
+
+void OS_DecommitMemory(void *base, U64 size) {
+    madvise(base, size, MADV_DONTNEED);
+    mprotect(base, size, PROT_NONE);
+}
+
+void OS_ReleaseMemory(void *base, U64 size) {
+    munmap(base, size);
+}
+
+U64 OS_GetPageSize() {
+    U64 result = sysconf(_SC_PAGESIZE);
+    return result;
+}
+
+U64 OS_GetAllocationGranularity() {
+    U64 result = sysconf(_SC_PAGESIZE);
+    return result;
+}
+
 #elif OS_SWITCH
-#error "switch memory subsystem not implemented"
+
+// we unfortunately don't have any other options to allocate memory with switchbrew, malloc/free are
+// the only userspace general address space allocators available to us
+//
+#include <stdlib.h>
+
+void *OS_ReserveMemory(U64 size) {
+    void *result = malloc(size);
+    return result;
+}
+
+B32 OS_CommitMemory(void *base, U64 size) {
+    (void) base;
+    (void) size;
+
+    // already committed the entire region with malloc so nothing to do
+    //
+    B32 result = true;
+    return result;
+}
+
+void OS_DecommitMemory(void *base, U64 size) {
+    (void) base;
+    (void) size;
+
+    // no decommit available because malloc/free so nothing to do
+    //
+}
+
+void OS_ReleaseMemory(void *base, U64 size) {
+    (void) size;
+
+    free(base);
+}
+
+U64 OS_GetPageSize() {
+    U64 result = 4096;
+    return result;
+}
+
+U64 OS_GetAllocationGranularity() {
+    U64 result = 4096;
+    return result;
+}
+
 #endif
 
 #define M_ARENA_MIN_OFFSET sizeof(M_Arena)
@@ -1253,7 +1334,7 @@ M_Arena *M_AllocArenaArgs(U64 limit, U64 initial_commit, M_ArenaFlags flags) {
     // more reasonable size
     //
     flags &= ~M_ARENA_DONT_GROW;
-    limit  = Min(limit, M_ARENA_MAX_RESERVE_SWITCHBREW);
+    limit  = Min(limit, M_ARENA_MAX_RESERVE_SWITCH);
 #endif
 
     M_Arena *result = __M_AllocSizedArena(limit, initial_commit, flags);
