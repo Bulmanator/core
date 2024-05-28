@@ -492,7 +492,7 @@ function B32 M_CompareSize(void *a, void *b, U64 size);
 #define COMPARE_FUNC(name) S32 name(void *a, void *b)
 typedef COMPARE_FUNC(CompareFunc);
 
-// quicksort is typically faster but merge sort is stable so have both depending on use-case
+// quick sort is typically faster but merge sort is stable so have both depending on use-case
 //
 function void _MergeSort(void *array, S64 count, CompareFunc *Compare, U64 element_size);
 function void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 element_size);
@@ -1216,8 +1216,8 @@ void _MergeSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) 
 
 // quick sort implementation
 //
-internal U64 _QuickSortPartition(U8 *array, CompareFunc *Compare, U64 element_size, S64 lo, S64 hi) {
-    U64 result = lo;
+internal S64 _QuickSortPartition(U8 *array, CompareFunc *Compare, U64 element_size, S64 lo, S64 hi) {
+    S64 result = lo;
 
     M_Temp temp = M_GetTemp(0, 0);
 
@@ -1255,7 +1255,7 @@ internal U64 _QuickSortPartition(U8 *array, CompareFunc *Compare, U64 element_si
 
 internal void _QuickSortRange(U8 *array, CompareFunc *Compare, U64 element_size, S64 lo, S64 hi) {
     if (lo < hi) {
-        U64 pivot = _QuickSortPartition(array, Compare, element_size, lo, hi);
+        S64 pivot = _QuickSortPartition(array, Compare, element_size, lo, hi);
 
         _QuickSortRange(array, Compare, element_size, lo, pivot - 1);
         _QuickSortRange(array, Compare, element_size, pivot + 1, hi);
