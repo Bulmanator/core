@@ -97,6 +97,8 @@ struct Str8 {
     U8 *data;
 };
 
+typedef void VoidProc(void);
+
 //
 // --------------------------------------------------------------------------------
 // :macros
@@ -484,6 +486,19 @@ function void *M_FillSize(void *dst, U8 value, U64 size);
 function void *M_ZeroSize(void *dst, U64 size);
 
 function B32 M_CompareSize(void *a, void *b, U64 size);
+
+// return -1 for a < b, 0 for a == b, 1 for a > b
+//
+#define COMPARE_FUNC(name) S32 name(void *a, void *b)
+typedef COMPARE_FUNC(CompareFunc);
+
+// quicksort is typically faster but merge sort is stable so have both depending on use-case
+//
+function void _MergeSort(void *array, S64 count, CompareFunc *Compare, U64 element_size);
+function void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 element_size);
+
+#define MergeSort(array, count, Compare) _MergeSort((void *) (array), (count), Compare, sizeof(*(array)))
+#define QuickSort(array, count, Compare) _QuickSort((void *) (array), (count), Compare, sizeof(*(array)))
 
 //
 // --------------------------------------------------------------------------------
@@ -1137,6 +1152,118 @@ B32 M_CompareSize(void *a, void *b, U64 size) {
     }
 
     return result;
+}
+
+// merge sort implementation
+//
+internal void _MergeSortMerge(U8 *array, CompareFunc *Compare, U64 element_size, S64 start, S64 middle, S64 end) {
+    S64 lcount = middle - start + 1;
+    S64 rcount = end - middle;
+
+    M_Temp temp = M_GetTemp(0, 0);
+
+    U8 *lstart = array + ((start)      * element_size);
+    U8 *rstart = array + ((middle + 1) * element_size);
+
+    U8 *l = M_ArenaPushCopy(temp.arena, lstart, U8, lcount * element_size);
+    U8 *r = M_ArenaPushCopy(temp.arena, rstart, U8, rcount * element_size);
+
+    U8 *lend = l + (lcount * element_size);
+    U8 *rend = r + (rcount * element_size);
+
+    U8 *element = array + (start * element_size);
+
+    while (l < lend && r < rend) {
+        if (Compare(l, r) <= 0) {
+            M_CopySize(element, l, element_size);
+            l += element_size;
+        }
+        else {
+            M_CopySize(element, r, element_size);
+            r += element_size;
+        }
+
+        element += element_size;
+    }
+
+    U64 l_remainder = cast(U64) (lend - l);
+    U64 r_remainder = cast(U64) (rend - r);
+
+    if (l_remainder) {
+        M_CopySize(element, l, l_remainder);
+        element += l_remainder;
+    }
+
+    if (r_remainder) { M_CopySize(element, r, r_remainder); }
+
+    M_ReleaseTemp(temp);
+}
+
+internal void _MergeSortSplit(U8 *array, CompareFunc *Compare, U64 element_size, S64 start, S64 end) {
+    if (start < end) {
+        S64 middle = start + ((end - start) >> 1);
+
+        _MergeSortSplit(array, Compare, element_size, start,      middle);
+        _MergeSortSplit(array, Compare, element_size, middle + 1, end);
+
+        _MergeSortMerge(array, Compare, element_size, start, middle, end);
+    }
+}
+
+void _MergeSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) {
+    _MergeSortSplit((U8 *) array, Compare, element_size, 0, count - 1);
+}
+
+// quick sort implementation
+//
+internal U64 _QuickSortPartition(U8 *array, CompareFunc *Compare, U64 element_size, S64 lo, S64 hi) {
+    U64 result = lo;
+
+    M_Temp temp = M_GetTemp(0, 0);
+
+    U8 *pivot = array + (hi * element_size);
+
+    U8 *i = array + (lo * element_size);
+    U8 *j = array + (lo * element_size);
+    U8 *t = M_ArenaPush(temp.arena, U8, element_size); // for swapping
+
+    for (S64 it = lo; it < hi; ++it) {
+        if (Compare(j, pivot) <= 0) {
+            // swap i and j
+            //
+            M_CopySize(t, i, element_size);
+            M_CopySize(i, j, element_size);
+            M_CopySize(j, t, element_size);
+
+            i      += element_size;
+            result += 1;
+        }
+
+        j += element_size;
+    }
+
+    // swap i with pivot
+    //
+    M_CopySize(t,     i,     element_size);
+    M_CopySize(i,     pivot, element_size);
+    M_CopySize(pivot, t,     element_size);
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+internal void _QuickSortRange(U8 *array, CompareFunc *Compare, U64 element_size, S64 lo, S64 hi) {
+    if (lo < hi) {
+        U64 pivot = _QuickSortPartition(array, Compare, element_size, lo, hi);
+
+        _QuickSortRange(array, Compare, element_size, lo, pivot - 1);
+        _QuickSortRange(array, Compare, element_size, pivot + 1, hi);
+    }
+}
+
+void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) {
+    _QuickSortRange((U8 *) array, Compare, element_size, 0, count - 1);
 }
 
 //

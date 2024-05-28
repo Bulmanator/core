@@ -20,6 +20,31 @@ struct ListNode {
 #define ExpectTrue(a) printf("    Testing... %s == true", #a); Assert(a); printf("... passed\n")
 #define ExpectFalse(a) printf("    Testing... %s == false", #a); Assert(!(a)); printf("... passed\n")
 
+internal COMPARE_FUNC(CompareInt) {
+    S32 result = 0;
+
+    int ai = *(int *) a;
+    int bi = *(int *) b;
+
+    if      (ai < bi) { result = -1; }
+    else if (bi < ai) { result =  1; }
+
+    return result;
+}
+
+internal COMPARE_FUNC(CompareListNode) {
+    ListNode *node_a = cast(ListNode *) a;
+    ListNode *node_b = cast(ListNode *) b;
+
+    if      (node_a->value < node_b->value) { return -1; }
+    else if (node_a->value > node_b->value) { return  1; }
+
+    return 0;
+}
+
+internal void DoesNothing() {
+}
+
 static int ExecuteTests(int argc, char **argv) {
     // ... do nothing for now
     //
@@ -281,6 +306,107 @@ static int ExecuteTests(int argc, char **argv) {
 
         M_ZeroSize(&d, sizeof(U32));
         ExpectIntValue(d, 0);
+
+        int some_array[]  = {
+            4,   41,  86, 100, 100,
+            32,  48,  48, 84,  31,
+            56,  70,  81, 44,  32,
+            44,  5,   18, 23,  22,
+            10,  90,  8,  99,  84,
+            9,   67,  32, 37,  12,
+            56,  36,  48, 82,  49,
+            99,  65,  91, 91,  80,
+            78,  31,  32, 11,  69,
+            20,  33,  2,  1,   0,
+            4,   8,   2,  3,   4
+        };
+
+        int other_array[] = {
+            93,  100, 11, 14,  12,
+            87,  90,  56, 79,  100,
+            77,  55,  19, 92,  91,
+            9,   68,  70, 58,  48,
+            50,  12,  43, 47,  86,
+            55,  72,  72, 7,   65,
+            1,   45,  32, 25,  71,
+            86,  14,  81, 6,   90,
+            36,  74,  61, 27,  1,
+            31,  38,  39, 83,  76,
+            100, 91,  58, 38,  88,
+        };
+
+
+        printf("    Unsorted: { ");
+
+        for (U64 it = 0; it < ArraySize(some_array); ++it) {
+            printf("%d ", some_array[it]);
+        }
+
+        printf("}\n");
+
+        MergeSort(some_array, ArraySize(some_array), CompareInt);
+
+        printf("    Sorted:   { ");
+
+        U32 total = 0;
+        for (U64 it = 0; it < ArraySize(some_array); ++it) {
+            printf("%d ", some_array[it]);
+
+            if (it != 0) { total += (some_array[it - 1] <= some_array[it]); }
+        }
+
+        printf("}\n");
+
+        ExpectIntValue(total, ArraySize(some_array) - 1);
+
+        printf("    Unsorted: { ");
+
+        for (U64 it = 0; it < ArraySize(other_array); ++it) {
+            printf("%d ", other_array[it]);
+        }
+
+        printf("}\n");
+
+        QuickSort(other_array, ArraySize(other_array), CompareInt);
+
+        printf("    Sorted:   { ");
+
+        total = 0;
+        for (U64 it = 0; it < ArraySize(other_array); ++it) {
+            printf("%d ", other_array[it]);
+
+            if (it != 0) { total += (other_array[it - 1] <= other_array[it]); }
+        }
+
+        printf("}\n");
+
+        ExpectIntValue(total, ArraySize(other_array) - 1);
+
+        ListNode nodes[10];
+
+        nodes[0].value = 22;
+        nodes[1].value = 9302;
+        nodes[2].value = 2;
+        nodes[3].value = 39;
+        nodes[4].value = 190;
+        nodes[5].value = 0;
+        nodes[6].value = 459;
+        nodes[7].value = 387;
+        nodes[8].value = 548;
+        nodes[9].value = 879;
+
+        printf("Before sort:\n");
+        for (U32 it = 0; it < 10; ++it) {
+            printf("    node[%d].value = %d\n", it, nodes[it].value);
+        }
+
+        QuickSort(nodes, ArraySize(nodes), CompareListNode);
+
+        printf("After sort:\n");
+        for (U32 it = 0; it < 10; ++it) {
+            printf("    node[%d].value = %d\n", it, nodes[it].value);
+        }
+
     }
     printf("\n");
 
