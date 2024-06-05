@@ -21,6 +21,7 @@ extern "C" {
 //     - :utilities  | some basic utility functions
 //     - :arena      | memory arena implementation
 //     - :strings    | counted string helpers
+//     - :logging    | logging interface
 //
 // This header can be included in one of three ways:
 //     1. As a standalone header by simply including the header with no specific pre-defines. This is
@@ -345,17 +346,33 @@ typedef void VoidProc(void);
     #define c_linkage_end
 #endif
 
-#define global_var    static
-#define internal      static
-#define local_persist static
-
 #if COMPILER_MSVC
     #define export_function c_linkage __declspec(dllexport)
     #define thread_var __declspec(thread)
+    #define THIS_FUNCTION_NAME      S(__FUNCTION__)
+    #define THIS_FUNCTION_SIGNATURE S(__FUNCSIG__)
 #else
     #define export_function c_linkage
     #define thread_var __thread
+    #define THIS_FUNCTION_NAME      S(__FUNCTION__)
+    #define THIS_FUNCTION_SIGNATURE S(__PRETTY_FUNCTION__)
 #endif
+
+#if !defined(THIS_FUNCTION)
+    // this function expands to just the name, can define THIS_FUNCTION as THIS_FUNCTION_SIGNATURE
+    // to get the full signature before including this header, or just use _NAME and _SIGNATURE
+    // independently where required
+    //
+    #define THIS_FUNCTION THIS_FUNCTION_NAME
+#endif
+
+#define THIS_FILE S(__FILE__)
+#define THIS_LINE  (__LINE__)
+
+#define global_var    static
+#define internal      static
+#define local_persist static
+#define thread_static static thread_var
 
 #if defined(CORE_LIB)
     #if COMPILER_MSVC
@@ -729,6 +746,73 @@ function B32 Chr_IsPathSeparator(U8 c); // checks for fwd/bkwd on windows, only 
 
 function U8 Chr_ToUppercase(U8 c);
 function U8 Chr_ToLowercase(U8 c);
+
+//
+// --------------------------------------------------------------------------------
+// :logging
+// --------------------------------------------------------------------------------
+//
+
+typedef U32 Log_Level;
+enum {
+    LOG_DEBUG = 0,
+    LOG_INFO,
+    LOG_WARN,
+    LOG_ERROR
+};
+
+typedef struct Log_MessageNode Log_MessageNode;
+struct Log_MessageNode {
+    Log_MessageNode *next;
+
+    Log_Level level;
+
+    Str8 file;
+    U32  line;
+    Str8 func;
+
+    Str8 message;
+};
+
+typedef struct Log_MessageList Log_MessageList;
+struct Log_MessageList {
+    Log_MessageNode *first;
+    Log_MessageNode *last;
+
+    U32 num_messages;
+};
+
+typedef struct Log_Context Log_Context;
+struct Log_Context {
+    M_Arena *arena;
+    U64 base_offset;
+
+    Log_MessageList messages;
+};
+
+function Str8 Log_StrFromLevel(Log_Level level);
+
+function Log_Context *Log_Alloc();
+function Log_Context *Log_Get(); // get current logger
+function void         Log_Clear(); // clear current logger
+
+function void Log_Select(Log_Context *logger); // for the current thread
+function void Log_Release(Log_Context *logger);
+
+function Log_MessageList *Log_GetMessages();
+
+function void Log_PushMessageArgs(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, va_list args);
+function void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, ...);
+
+#if !defined(NDEBUG)
+    #define Log_Debug(f, ...) Log_PushMessage(LOG_DEBUG, THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
+#else
+    #define Log_Debug(...)
+#endif
+
+#define Log_Info(f, ...)  Log_PushMessage(LOG_INFO,  THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
+#define Log_Warn(f, ...)  Log_PushMessage(LOG_WARN,  THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
+#define Log_Error(f, ...) Log_PushMessage(LOG_ERROR, THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
 
 #if defined(__cplusplus)
 }
@@ -1634,7 +1718,7 @@ void M_ArenaPopLast(M_Arena *arena) {
     #define M_TEMP_ARENA_RESERVE_SIZE GB(4)
 #endif
 
-global_var thread_var M_Arena *__tls_temp[M_TEMP_ARENA_COUNT];
+thread_static M_Arena *__tls_temp[M_TEMP_ARENA_COUNT];
 
 M_Temp M_GetTemp(U32 count, M_Arena **conflicts) {
     M_Temp result;
@@ -2112,6 +2196,106 @@ U8 Chr_ToUppercase(U8 c) {
 U8 Chr_ToLowercase(U8 c) {
     U8 result = Chr_IsUppercase(c) ? (c + ('a' - 'A')) : c;
     return result;
+}
+
+//
+// --------------------------------------------------------------------------------
+// :impl_logging
+// --------------------------------------------------------------------------------
+//
+
+#if !defined(LOG_CONTEXT_ARENA_SIZE)
+    #define LOG_CONTEXT_ARENA_SIZE MB(8)
+#endif
+
+thread_static Log_Context *__thread_logger;
+
+Str8 Log_StrFromLevel(Log_Level level) {
+    Str8 result = S("Unknown");
+
+    switch (level) {
+        case LOG_DEBUG: { result = S("Debug");   } break;
+        case LOG_INFO:  { result = S("Info");    } break;
+        case LOG_WARN:  { result = S("Warning"); } break;
+        case LOG_ERROR: { result = S("Error");   } break;
+        default: {} break;
+    }
+
+    return result;
+}
+
+Log_Context *Log_Alloc() {
+    M_Arena     *arena  = M_AllocArena(LOG_CONTEXT_ARENA_SIZE);
+    Log_Context *result = M_ArenaPush(arena, Log_Context);
+
+    result->arena       = arena;
+    result->base_offset = M_GetArenaOffset(arena);
+
+    return result;
+}
+
+Log_Context *Log_Get() {
+    Log_Context *result = __thread_logger;
+    return result;
+}
+
+void Log_Release(Log_Context *logger) {
+    if (__thread_logger == logger) { __thread_logger = 0; }
+
+    M_Arena *arena = logger->arena;
+    M_ReleaseArena(arena);
+}
+
+void Log_Clear() {
+    Log_Context *logger = __thread_logger;
+
+    if (logger) {
+        M_ArenaPopTo(logger->arena, logger->base_offset);
+
+        logger->messages.first        = 0;
+        logger->messages.last         = 0;
+        logger->messages.num_messages = 0;
+    }
+}
+
+void Log_Select(Log_Context *logger) {
+    __thread_logger = logger;
+}
+
+Log_MessageList *Log_GetMessages() {
+    Log_MessageList *result = 0;
+
+    if (__thread_logger) { result = &__thread_logger->messages; }
+    return result;
+}
+
+void Log_PushMessageArgs(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, va_list args) {
+    if (__thread_logger) {
+        Log_MessageNode *node = M_ArenaPush(__thread_logger->arena, Log_MessageNode);
+
+        // @todo: we probably don't have to copy the file/func each time because they are likely coming
+        // from the statically defined macro varaibles
+        //
+        node->level = level;
+        node->file  = Str8_Copy(__thread_logger->arena, file);
+        node->line  = line;
+        node->func  = Str8_Copy(__thread_logger->arena, func);
+
+        node->message = Str8_FormatArgs(__thread_logger->arena, format, args);
+
+        Log_MessageList *messages = &__thread_logger->messages;
+
+        SLL_Enqueue(messages->first, messages->last, node);
+    }
+}
+
+void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+
+    Log_PushMessageArgs(level, file, line, func, format, args);
+
+    va_end(args);
 }
 
 #endif  // CORE_C_

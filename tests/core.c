@@ -42,9 +42,6 @@ internal COMPARE_FUNC(CompareListNode) {
     return 0;
 }
 
-internal void DoesNothing() {
-}
-
 static int ExecuteTests(int argc, char **argv) {
     // ... do nothing for now
     //
@@ -576,6 +573,44 @@ static int ExecuteTests(int argc, char **argv) {
 
         ExpectIntValue(Chr_ToUppercase('a'), 'A');
         ExpectIntValue(Chr_ToLowercase('A'), 'a');
+    }
+    printf("\n");
+
+    printf("-- Logging\n");
+    {
+        Log_Context *log = Log_Alloc();
+        Log_Select(log);
+
+        Log_Debug("Hello, %d", 69105);
+        Log_Info("Other INFO");
+
+        Log_Warn("WARNING SOMETHING ISN'T RIGHT!");
+
+        Log_Error("Error failed");
+
+        const char *expected_messages[] = {
+            ("Hello, 69105"),
+            ("Other INFO"),
+            ("WARNING SOMETHING ISN'T RIGHT!"),
+            ("Error failed")
+        };
+
+        U32 index = 0;
+
+        Log_MessageList *messages = Log_GetMessages();
+        for (Log_MessageNode *n = messages->first; n != 0; n = n->next) {
+            ExpectStrValue(n->message, expected_messages[index]);
+            ExpectIntValue(n->level, index);
+
+            index += 1;
+        }
+
+        ExpectStrValue(Log_StrFromLevel(LOG_ERROR), "Error");
+
+        Log_Clear();
+
+        log = Log_Get();
+        Log_Release(log);
     }
     printf("\n");
 
