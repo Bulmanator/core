@@ -6,7 +6,7 @@ if not exist "..\build" (mkdir "..\build")
 
 pushd "..\build" > NUL
 
-set cl_options=-nologo -Od -Zi -W4 -WX -I".."
+set cl_options=-nologo -Od -Zi -W4 -WX -wd4127 -I".."
 set link_options=-subsystem:console
 
 REM build core tests

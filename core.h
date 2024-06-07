@@ -22,6 +22,7 @@ extern "C" {
 //     - :arena      | memory arena implementation
 //     - :strings    | counted string helpers
 //     - :logging    | logging interface
+//     - :filesystem | filesystem + file io interface
 //
 // This header can be included in one of three ways:
 //     1. As a standalone header by simply including the header with no specific pre-defines. This is
@@ -96,6 +97,13 @@ typedef struct Str8 Str8;
 struct Str8 {
     S64 count;
     U8 *data;
+};
+
+// generic handle for representing primitives implemented by the operating system
+//
+typedef struct OS_Handle OS_Handle;
+struct OS_Handle {
+    U64 v[1];
 };
 
 typedef void VoidProc(void);
@@ -267,6 +275,8 @@ typedef void VoidProc(void);
 #define Stringify(x) _Stringify(x)
 
 #define FourCC(a, b, c, d) (((U32) (d) << 24) | ((U32) (b) << 16) | ((U32) (c) << 8) | ((U32) (a) << 0))
+
+#define Compose_U64(hi, lo) (((U64) (hi) << 32) | (lo))
 
 // linked list handling
 //
@@ -473,6 +483,15 @@ function B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, vo
 // --------------------------------------------------------------------------------
 //
 
+// os handle utilities
+//
+function OS_Handle OS_NilHandle();
+
+function B32 OS_HandleEqual(OS_Handle a, OS_Handle b);
+function B32 OS_HandleValid(OS_Handle a); // only vaild if != OS_NilHandle()
+
+// number utilities
+//
 function U32 SaturateCast_U32(U64 value);
 function U16 SaturateCast_U16(U32 value);
 function U8  SaturateCast_U8 (U16 value);
@@ -523,15 +542,15 @@ function void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 eleme
 // --------------------------------------------------------------------------------
 //
 
-// os virtual memory
+// virtual memory
 //
-function void *OS_ReserveMemory(U64 size);
-function B32   OS_CommitMemory(void *base, U64 size);
-function void  OS_DecommitMemory(void *base, U64 size);
-function void  OS_ReleaseMemory(void *base, U64 size);
+function void *M_Reserve(U64 size);
+function B32   M_Commit(void *base, U64 size);
+function void  M_Decommit(void *base, U64 size);
+function void  M_Release(void *base, U64 size);
 
-function U64 OS_GetPageSize();
-function U64 OS_GetAllocationGranularity();
+function U64 M_GetPageSize();
+function U64 M_GetAllocationGranularity();
 
 // memory size macros
 //
@@ -814,6 +833,97 @@ function void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, c
 #define Log_Warn(f, ...)  Log_PushMessage(LOG_WARN,  THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
 #define Log_Error(f, ...) Log_PushMessage(LOG_ERROR, THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
 
+//
+// --------------------------------------------------------------------------------
+// :filesystem
+// --------------------------------------------------------------------------------
+//
+typedef U32 FS_Properties;
+enum {
+    FS_PROPERTY_IS_DIRECTORY = (1 << 0),
+    FS_PROPERTY_IS_HIDDEN    = (1 << 1)
+};
+
+typedef struct FS_Time FS_Time;
+struct FS_Time {
+    U64 written;
+    U64 accessed;
+    U64 created;
+};
+
+typedef struct FS_Entry FS_Entry;
+struct FS_Entry {
+    FS_Entry *next;
+
+    Str8 path;
+
+    FS_Properties props;
+    U64 size;
+
+    FS_Time times;
+};
+
+typedef struct FS_List FS_List;
+struct FS_List {
+    FS_Entry *first;
+    FS_Entry *last;
+
+    U32 num_entries;
+};
+
+typedef U32 FS_ListFlags;
+enum {
+    FS_LIST_RECURSIVE      = (1 << 0),
+    FS_LIST_INCLUDE_HIDDEN = (1 << 1) // relative '.' and '..' directories are never included in the list
+};
+
+function FS_List FS_ListPath(M_Arena *arena, Str8 path, FS_ListFlags flags);
+
+typedef U32 FS_Access;
+enum {
+    FS_ACCESS_READ      = (1 << 0),
+    FS_ACCESS_WRITE     = (1 << 1),
+    FS_ACCESS_READWRITE = (FS_ACCESS_READ | FS_ACCESS_WRITE)
+};
+
+function OS_Handle FS_OpenFile(Str8 path, FS_Access access);
+function void      FS_CloseFile(OS_Handle file);
+function B32       FS_RemoveFile(Str8 path);
+
+// returns number of bytes read/written
+//
+function S64 FS_ReadFile(OS_Handle file, Str8 data, U64 offset);
+function S64 FS_WriteFile(OS_Handle file, Str8 data, U64 offset);
+function S64 FS_AppendFile(OS_Handle file, Str8 data);
+
+// info from handle
+//
+function FS_Properties FS_PropertiesFromHandle(OS_Handle file);
+function FS_Time       FS_TimeFromHandle(OS_Handle file);
+function Str8          FS_PathFromHandle(M_Arena *arena, OS_Handle file);
+function U64           FS_SizeFromHandle(OS_Handle file);
+
+// info from path
+//
+function FS_Properties FS_PropertiesFromPath(Str8 path);
+function FS_Time       FS_TimeFromPath(Str8 path);
+function U64           FS_SizeFromPath(Str8 path);
+
+function B32 FS_CreateDirectory(Str8 path);
+function B32 FS_RemoveDirectory(Str8 path);
+
+function Str8 FS_ReadEntireFile(M_Arena *arena, Str8 path);
+
+typedef U32 FS_PathType;
+enum {
+    FS_PATH_EXE,
+    FS_PATH_USER,
+    FS_PATH_TEMP,
+    FS_PATH_WORKING
+};
+
+function Str8 FS_GetPath(M_Arena *arena, FS_PathType type);
+
 #if defined(__cplusplus)
 }
 #endif
@@ -1053,6 +1163,21 @@ U64 RotateRight_U64(U64 x, U32 count) {
 // :impl_utilities
 // --------------------------------------------------------------------------------
 //
+
+OS_Handle OS_NilHandle() {
+    OS_Handle result = { 0 };
+    return result;
+}
+
+B32 OS_HandleEqual(OS_Handle a, OS_Handle b) {
+    B32 result = (a.v[0] == b.v[0]);
+    return result;
+}
+
+B32 OS_HandleValid(OS_Handle a) {
+    B32 result = !OS_HandleEqual(a, OS_NilHandle());
+    return result;
+}
 
 U32 SaturateCast_U32(U64 value) {
     U32 result = (value > U32_MAX) ? U32_MAX : cast(U32) value;
@@ -1360,26 +1485,26 @@ void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) 
 //
 #if OS_WINDOWS
 
-void *OS_ReserveMemory(U64 size) {
+void *M_Reserve(U64 size) {
     void *result = VirtualAlloc(0, size, MEM_RESERVE, PAGE_NOACCESS);
     return result;
 }
 
-B32 OS_CommitMemory(void *base, U64 size) {
+B32 M_Commit(void *base, U64 size) {
     B32 result = VirtualAlloc(base, size, MEM_COMMIT, PAGE_READWRITE) != 0;
     return result;
 }
 
-void OS_DecommitMemory(void *base, U64 size) {
+void M_Decommit(void *base, U64 size) {
     VirtualFree(base, size, MEM_DECOMMIT);
 }
 
-void OS_ReleaseMemory(void *base, U64 size) {
+void M_Release(void *base, U64 size) {
     (void) size;
     VirtualFree(base, 0, MEM_RELEASE);
 }
 
-U64 OS_GetPageSize() {
+U64 M_GetPageSize() {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
 
@@ -1387,7 +1512,7 @@ U64 OS_GetPageSize() {
     return result;
 }
 
-U64 OS_GetAllocationGranularity() {
+U64 M_GetAllocationGranularity() {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
 
@@ -1405,33 +1530,33 @@ U64 OS_GetAllocationGranularity() {
     #define MAP_ANON MAP_ANONYMOUS
 #endif
 
-void *OS_ReserveMemory(U64 size) {
+void *M_Reserve(U64 size) {
     void *ptr = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
 
     void *result = (ptr == MAP_FAILED) ? 0 : ptr;
     return result;
 }
 
-B32 OS_CommitMemory(void *base, U64 size) {
+B32 M_Commit(void *base, U64 size) {
     B32 result = mprotect(base, size, PROT_READ | PROT_WRITE) == 0;
     return result;
 }
 
-void OS_DecommitMemory(void *base, U64 size) {
+void M_Decommit(void *base, U64 size) {
     madvise(base, size, MADV_DONTNEED);
     mprotect(base, size, PROT_NONE);
 }
 
-void OS_ReleaseMemory(void *base, U64 size) {
+void M_Release(void *base, U64 size) {
     munmap(base, size);
 }
 
-U64 OS_GetPageSize() {
+U64 M_GetPageSize() {
     U64 result = sysconf(_SC_PAGESIZE);
     return result;
 }
 
-U64 OS_GetAllocationGranularity() {
+U64 M_GetAllocationGranularity() {
     U64 result = sysconf(_SC_PAGESIZE);
     return result;
 }
@@ -1443,12 +1568,12 @@ U64 OS_GetAllocationGranularity() {
 //
 #include <stdlib.h>
 
-void *OS_ReserveMemory(U64 size) {
+void *M_Reserve(U64 size) {
     void *result = malloc(size);
     return result;
 }
 
-B32 OS_CommitMemory(void *base, U64 size) {
+B32 M_Commit(void *base, U64 size) {
     (void) base;
     (void) size;
 
@@ -1458,7 +1583,7 @@ B32 OS_CommitMemory(void *base, U64 size) {
     return result;
 }
 
-void OS_DecommitMemory(void *base, U64 size) {
+void M_Decommit(void *base, U64 size) {
     (void) base;
     (void) size;
 
@@ -1466,18 +1591,18 @@ void OS_DecommitMemory(void *base, U64 size) {
     //
 }
 
-void OS_ReleaseMemory(void *base, U64 size) {
+void M_Release(void *base, U64 size) {
     (void) size;
 
     free(base);
 }
 
-U64 OS_GetPageSize() {
+U64 M_GetPageSize() {
     U64 result = 4096;
     return result;
 }
 
-U64 OS_GetAllocationGranularity() {
+U64 M_GetAllocationGranularity() {
     U64 result = 4096;
     return result;
 }
@@ -1501,17 +1626,17 @@ U64 OS_GetAllocationGranularity() {
 internal M_Arena *__M_AllocSizedArena(U64 limit, U64 initial_commit, M_ArenaFlags flags) {
     M_Arena *result = 0;
 
-    U64 page_size   = OS_GetPageSize();
-    U64 granularity = OS_GetAllocationGranularity();
+    U64 page_size   = M_GetPageSize();
+    U64 granularity = M_GetAllocationGranularity();
 
     // have at least the allocation granularity to reserve and at least the page size to commit
     //
     U64 to_reserve = Max(AlignUp(limit, granularity), granularity);
     U64 to_commit  = Clamp(page_size, AlignUp(initial_commit, page_size), to_reserve);
 
-    void *base = OS_ReserveMemory(to_reserve);
+    void *base = M_Reserve(to_reserve);
     if (base != 0) {
-        if (OS_CommitMemory(base, to_commit)) {
+        if (M_Commit(base, to_commit)) {
             result = cast(M_Arena *) base;
 
             result->current = result;
@@ -1565,7 +1690,7 @@ void M_ResetArena(M_Arena *arena) {
 
         current = current->prev;
 
-        OS_ReleaseMemory(base, size);
+        M_Release(base, size);
     }
 
     Assert(current == arena);
@@ -1574,7 +1699,7 @@ void M_ResetArena(M_Arena *arena) {
     void *decommit_base = cast(U8 *) current + M_ARENA_COMMIT_SIZE;
     U64   decommit_size = current->committed - M_ARENA_COMMIT_SIZE;
 
-    if (decommit_size != 0) { OS_DecommitMemory(decommit_base, decommit_size); }
+    if (decommit_size != 0) { M_Decommit(decommit_base, decommit_size); }
 
     current->offset      = M_ARENA_MIN_OFFSET;
     current->last_offset = M_ARENA_MIN_OFFSET;
@@ -1591,7 +1716,7 @@ void M_ReleaseArena(M_Arena *arena) {
 
         current = current->prev;
 
-        OS_ReleaseMemory(base, size);
+        M_Release(base, size);
     }
 }
 
@@ -1627,7 +1752,7 @@ void *M_ArenaPushFrom(M_Arena *arena, U64 size, M_ArenaFlags flags, U64 alignmen
         U64 commit_limit  = Min(commit_offset, current->limit);
         U64 commit_size   = commit_limit - current->committed;
 
-        if (OS_CommitMemory(commit_base, commit_size)) { current->committed = commit_limit; }
+        if (M_Commit(commit_base, commit_size)) { current->committed = commit_limit; }
     }
 
     if (current->committed >= end) {
@@ -1668,7 +1793,7 @@ void M_ArenaPopTo(M_Arena *arena, U64 offset) {
 
         current = current->prev;
 
-        OS_ReleaseMemory(base, size);
+        M_Release(base, size);
     }
 
     U64 local_offset = Max(offset - current->base, M_ARENA_MIN_OFFSET);
@@ -2286,6 +2411,8 @@ void Log_PushMessageArgs(Log_Level level, Str8 file, U32 line, Str8 func, const 
         Log_MessageList *messages = &__thread_logger->messages;
 
         SLL_Enqueue(messages->first, messages->last, node);
+
+        messages->num_messages += 1;
     }
 }
 
@@ -2296,6 +2423,678 @@ void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, const char
     Log_PushMessageArgs(level, file, line, func, format, args);
 
     va_end(args);
+}
+
+//
+// --------------------------------------------------------------------------------
+// :impl_filesystem
+// --------------------------------------------------------------------------------
+//
+
+#if OS_WINDOWS
+
+// Win32
+//
+internal WCHAR *Win32_WideFromStr8(M_Arena *arena, Str8 str) {
+    int    length = MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, 0, 0);
+    WCHAR *result = M_ArenaPush(arena, WCHAR, length);
+
+    MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, result, length);
+    return result;
+}
+
+internal Str8 Win32_Str8FromWide(M_Arena *arena, WCHAR *str) {
+    Str8 result;
+
+    result.count = WideCharToMultiByte(CP_UTF8, 0, str, -1, 0, 0, 0, 0) - 1;
+    result.data  = M_ArenaPush(arena, U8, result.count + 1);
+
+    WideCharToMultiByte(CP_UTF8, 0, str, -1, cast(char *) result.data, cast(int) (result.count + 1), 0, 0);
+    return result;
+}
+
+internal void Win32_ListPathRecurse(M_Arena *arena, FS_List *list, Str8 path, FS_ListFlags flags) {
+    M_Temp temp  = M_GetTemp(1, &arena);
+
+    // we have to append the wildcard to search
+    //
+    Str8 search_path = Sf(temp.arena, "%.*s\\*", Sv(path));
+    WCHAR *wpath     = Win32_WideFromStr8(temp.arena, search_path);
+
+    B32 recurse        = (flags & FS_LIST_RECURSIVE)      != 0;
+    B32 include_hidden = (flags & FS_LIST_INCLUDE_HIDDEN) != 0;
+
+    WIN32_FIND_DATAW find_data;
+    HANDLE find = FindFirstFileW(wpath, &find_data);
+
+    while (find != INVALID_HANDLE_VALUE) {
+        Str8 basename = Win32_Str8FromWide(temp.arena, find_data.cFileName);
+
+        B32 should_skip = false;
+        B32 is_hidden   = true;
+
+        if (basename.count == 2 && basename.data[0] == '.' && basename.data[1] == '.') {
+            // always skip relative ..
+            //
+            should_skip = true;
+        }
+        else if (basename.count && basename.data[0] == '.') {
+            // always skip relative . or if not including hidden files skip "unix-style" hidden files
+            // beginning with a .
+            //
+            should_skip = ((basename.count == 1) || !include_hidden);
+        }
+        else {
+            is_hidden = (find_data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN);
+        }
+
+        should_skip = should_skip || (!include_hidden && is_hidden);
+
+        if (!should_skip) {
+            // Create and fill out the entry for the list
+            //
+            FS_Entry *entry = M_ArenaPush(arena, FS_Entry);
+
+            FILETIME *ct = &find_data.ftCreationTime;
+            FILETIME *at = &find_data.ftLastAccessTime;
+            FILETIME *wt = &find_data.ftLastWriteTime;
+
+            B32 is_dir = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+
+            entry->path   = Sf(arena, "%.*s/%.*s", Sv(path), Sv(basename));
+            entry->size   = Compose_U64(find_data.nFileSizeHigh, find_data.nFileSizeLow);
+            entry->props |= is_hidden ? FS_PROPERTY_IS_HIDDEN    : 0;
+            entry->props |= is_dir    ? FS_PROPERTY_IS_DIRECTORY : 0;
+
+            entry->times.written  = Compose_U64(wt->dwHighDateTime, wt->dwLowDateTime);
+            entry->times.accessed = Compose_U64(at->dwHighDateTime, at->dwLowDateTime);
+            entry->times.created  = Compose_U64(ct->dwHighDateTime, ct->dwLowDateTime);
+
+            SLL_Enqueue(list->first, list->last, entry);
+
+            list->num_entries += 1;
+
+            if (recurse) { Win32_ListPathRecurse(arena, list, entry->path, flags); }
+        }
+
+        if (!FindNextFileW(find, &find_data)) {
+            break;
+        }
+    }
+
+    M_ReleaseTemp(temp);
+}
+
+FS_List FS_ListPath(M_Arena *arena, Str8 path, FS_ListFlags flags) {
+    FS_List result = { 0 };
+
+    Win32_ListPathRecurse(arena, &result, path, flags);
+    return result;
+}
+
+OS_Handle FS_OpenFile(Str8 path, FS_Access access) {
+    OS_Handle result = OS_NilHandle();
+
+    DWORD dwAccess   = 0;
+    DWORD dwCreation = OPEN_EXISTING;
+
+    if (access & FS_ACCESS_READ) {
+        dwAccess   |= GENERIC_READ;
+        dwCreation  = OPEN_EXISTING;
+    }
+
+    if (access & FS_ACCESS_WRITE) {
+        dwAccess   |= GENERIC_WRITE;
+        dwCreation  = OPEN_ALWAYS;
+    }
+
+    // resolve relative path and convert to UTF-16
+    //
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    HANDLE hFile = CreateFileW(wpath, dwAccess, FILE_SHARE_READ, 0, dwCreation, FILE_ATTRIBUTE_NORMAL, 0);
+
+    if (hFile != INVALID_HANDLE_VALUE) {
+        result.v[0] = cast(U64) hFile;
+    }
+    else {
+        Log_Error("Failed to open file '%.*s' (0x%x)", Sv(path), GetLastError());
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+void FS_CloseFile(OS_Handle file) {
+    if (OS_HandleValid(file)) {
+        HANDLE hFile = cast(HANDLE) file.v[0];
+        CloseHandle(hFile);
+    }
+}
+
+B32 FS_RemoveFile(Str8 path) {
+    B32 result;
+
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    result = DeleteFileW(wpath);
+    if (!result) {
+        Log_Error("Failed to delete file '%.*s' (0x%x)", Sv(path), GetLastError());
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+S64 FS_ReadFile(OS_Handle file, Str8 data, U64 offset) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile  = cast(HANDLE) file.v[0];
+        U8 *ptr       = data.data;
+        S64 remaining = data.count;
+
+        OVERLAPPED overlapped = { 0 };
+        overlapped.Offset     = cast(DWORD) (offset >>  0);
+        overlapped.OffsetHigh = cast(DWORD) (offset >> 32);
+
+        while (remaining > 0) {
+            DWORD nread   = 0;
+            DWORD to_read = SaturateCast_U32(remaining);
+
+            if (ReadFile(hFile, ptr, to_read, &nread, &overlapped)) {
+                remaining -= nread;
+                ptr       += nread;
+                offset    += nread;
+
+                overlapped.Offset     = cast(DWORD) (offset >>  0);
+                overlapped.OffsetHigh = cast(DWORD) (offset >> 32);
+            }
+            else {
+                Log_Error("Failed to read %d bytes at offset %lld (0x%x)", to_read, offset, GetLastError());
+                break;
+            }
+        }
+
+        result = cast(S64) (ptr - data.data);
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+S64 FS_WriteFile(OS_Handle file, Str8 data, U64 offset) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile  = cast(HANDLE) file.v[0];
+        U8 *ptr       = data.data;
+        S64 remaining = data.count;
+
+        OVERLAPPED overlapped = { 0 };
+        overlapped.Offset     = cast(DWORD) (offset >>  0);
+        overlapped.OffsetHigh = cast(DWORD) (offset >> 32);
+
+        while (remaining > 0) {
+            DWORD nwritten = 0;
+            DWORD to_write = SaturateCast_U32(remaining);
+
+            if (WriteFile(hFile, ptr, to_write, &nwritten, &overlapped)) {
+                remaining -= nwritten;
+                ptr       += nwritten;
+                offset    += nwritten;
+
+                overlapped.Offset     = cast(DWORD) (offset >>  0);
+                overlapped.OffsetHigh = cast(DWORD) (offset >> 32);
+            }
+            else {
+                Log_Error("Failed to write %d bytes at offset %lld (0x%x)", to_write, offset, GetLastError());
+                break;
+            }
+        }
+
+        result = cast(S64) (ptr - data.data);
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+S64 FS_AppendFile(OS_Handle file, Str8 data) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile = cast(HANDLE) file.v[0];
+
+        FILE_STANDARD_INFO info;
+        if (GetFileInformationByHandleEx(hFile, FileStandardInfo, &info, sizeof(FILE_STANDARD_INFO))) {
+            U64 offset = info.EndOfFile.QuadPart;
+            result     = FS_WriteFile(file, data, offset);
+        }
+        else {
+            Log_Error("Failed to get end-of-file offset (0x%x)", GetLastError());
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+FS_Properties FS_PropertiesFromHandle(OS_Handle file) {
+    FS_Properties result = 0;
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile = cast(HANDLE) file.v[0];
+
+        BY_HANDLE_FILE_INFORMATION info;
+        if (GetFileInformationByHandle(hFile, &info)) {
+            DWORD attrs = info.dwFileAttributes;
+
+            M_Temp temp   = M_GetTemp(0, 0);
+            Str8 path     = FS_PathFromHandle(temp.arena, file);
+            Str8 basename = Str8_GetBasename(path);
+
+            result |= (attrs & FILE_ATTRIBUTE_DIRECTORY)          ? FS_PROPERTY_IS_DIRECTORY : 0;
+            result |= (attrs & FILE_ATTRIBUTE_HIDDEN)             ? FS_PROPERTY_IS_HIDDEN    : 0;
+            result |= (basename.count && basename.data[0] == '.') ? FS_PROPERTY_IS_HIDDEN    : 0;
+
+            M_ReleaseTemp(temp);
+        }
+        else {
+            Log_Error("Failed to get file handle information (0x%x)", GetLastError());
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+FS_Time FS_TimeFromHandle(OS_Handle file) {
+    FS_Time result = { 0 };
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile = cast(HANDLE) file.v[0];
+
+        FILETIME ct, at, wt;
+        if (GetFileTime(hFile, &ct, &at, &wt)) {
+            result.created  = Compose_U64(ct.dwHighDateTime, ct.dwLowDateTime);
+            result.accessed = Compose_U64(at.dwHighDateTime, at.dwLowDateTime);
+            result.written  = Compose_U64(wt.dwHighDateTime, wt.dwLowDateTime);
+        }
+        else {
+            Log_Error("Failed to get file times (0x%x)", GetLastError());
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
+    Str8 result = { 0 };
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile = cast(HANDLE) file.v[0];
+        M_Temp temp  = M_GetTemp(1, &arena);
+
+        // Push a 1KiB buffer as an initial guess, if that is too small the FILE_NAME_INFO will
+        // contain how long we need to make the buffer so pop last and retry with the correct length
+        //
+        DWORD dwBufferSize    = KB(1);
+        U8 *lpFileInformation = M_ArenaPush(temp.arena, U8, dwBufferSize);
+
+        if (!GetFileInformationByHandleEx(hFile, FileNameInfo, lpFileInformation, dwBufferSize)) {
+            DWORD err = GetLastError();
+            if (err == ERROR_MORE_DATA) {
+                FILE_NAME_INFO *name_info = cast(FILE_NAME_INFO *) lpFileInformation;
+                dwBufferSize = name_info->FileNameLength + sizeof(FILE_NAME_INFO) + 2;
+
+                M_ArenaPopLast(temp.arena);
+
+                lpFileInformation = M_ArenaPush(temp.arena, U8, dwBufferSize);
+                if (!GetFileInformationByHandleEx(hFile, FileNameInfo, lpFileInformation, dwBufferSize)) {
+                    Log_Error("Failed to get file handle name information (0x%x)", GetLastError());
+                    lpFileInformation = 0;
+                }
+            }
+            else {
+                Log_Error("Failed to get file handle name information (0x%x)", err);
+                lpFileInformation = 0;
+            }
+        }
+
+        if (lpFileInformation) {
+            // We got the filename
+            //
+            FILE_NAME_INFO *name_info = cast(FILE_NAME_INFO *) lpFileInformation;
+            result = Win32_Str8FromWide(arena, name_info->FileName);
+        }
+
+        M_ReleaseTemp(temp);
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+U64 FS_SizeFromHandle(OS_Handle file) {
+    U64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        HANDLE hFile = cast(HANDLE) file.v[0];
+
+        LARGE_INTEGER size;
+        if (GetFileSizeEx(hFile, &size)) {
+            result = size.QuadPart;
+        }
+        else {
+            Log_Error("Failed to get file size (0x%x)", GetLastError());
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+FS_Properties FS_PropertiesFromPath(Str8 path) {
+    FS_Properties result = 0;
+
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    DWORD attrs = GetFileAttributesW(wpath);
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+        result |= (attrs & FILE_ATTRIBUTE_DIRECTORY) ? FS_PROPERTY_IS_DIRECTORY : 0;
+        result |= (attrs & FILE_ATTRIBUTE_HIDDEN)    ? FS_PROPERTY_IS_HIDDEN    : 0;
+    }
+    else {
+        Log_Error("Failed to get file attributes for '%.*s' (0x%x)", Sv(path), GetLastError());
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+FS_Time FS_TimeFromPath(Str8 path) {
+    FS_Time result = { 0 };
+
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    WIN32_FILE_ATTRIBUTE_DATA attrs;
+    if (GetFileAttributesExW(wpath, GetFileExInfoStandard, &attrs)) {
+        FILETIME *ct = &attrs.ftCreationTime;
+        FILETIME *at = &attrs.ftLastAccessTime;
+        FILETIME *wt = &attrs.ftLastWriteTime;
+
+        result.created  = Compose_U64(ct->dwHighDateTime, ct->dwLowDateTime);
+        result.accessed = Compose_U64(at->dwHighDateTime, at->dwLowDateTime);
+        result.written  = Compose_U64(wt->dwHighDateTime, wt->dwLowDateTime);
+    }
+    else {
+        Log_Error("Failed to get file attributes for '%.*s' (0x%x)", Sv(path), GetLastError());
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+U64 FS_SizeFromPath(Str8 path) {
+    U64 result = 0;
+
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    WIN32_FILE_ATTRIBUTE_DATA attrs;
+    if (GetFileAttributesExW(wpath, GetFileExInfoStandard, &attrs)) {
+        result = Compose_U64(attrs.nFileSizeHigh, attrs.nFileSizeLow);
+    }
+    else {
+        Log_Error("Failed to get file attributes for '%.*s' (0x%x)", Sv(path), GetLastError());
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+B32 FS_CreateDirectory(Str8 path) {
+    B32 result = true;
+
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    U64 it = 0;
+    while (wpath[it] != 0) {
+        if (wpath[it] == L'/' || wpath[it] == L'\\') {
+            // We temporarily null-terminate this segment to create parent directories
+            //
+            WCHAR sep = wpath[it];
+            wpath[it] = L'\0';
+
+            if (!CreateDirectoryW(wpath, 0)) {
+                DWORD err = GetLastError();
+                if (err != ERROR_ALREADY_EXISTS) {
+                    Str8 dir = Win32_Str8FromWide(temp.arena, wpath);
+                    Log_Error("Failed to create directory '%.*s' (0x%x)", Sv(dir), err);
+
+                    result = false;
+                    break;
+                }
+            }
+
+            // restore the separator
+            //
+            wpath[it] = sep;
+        }
+
+        it += 1;
+    }
+
+    if (result) {
+        // We successfully created all of the parent directories (or they already existed) so
+        // create the final directory
+        //
+        if (!CreateDirectoryW(wpath, 0)) {
+            DWORD err = GetLastError();
+            if (err == ERROR_ALREADY_EXISTS) {
+                DWORD attrs = GetFileAttributesW(wpath);
+                if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                    Log_Error("Attempted to create directory at '%.*s', but a file was found", Sv(path));
+                    result = false;
+                }
+            }
+            else {
+                Log_Error("Failed to create directory '%.*s' (0x%x)", Sv(path), err);
+                result = false;
+            }
+        }
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+B32 FS_RemoveDirectory(Str8 path) {
+    B32 result;
+
+    M_Temp temp  = M_GetTemp(0, 0);
+    WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
+
+    result = RemoveDirectoryW(wpath);
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+// :folderid_hack
+//
+#include <shlobj.h>
+#pragma comment(lib, "shell32.lib") // SHGetKnownFolderPath
+#pragma comment(lib, "ole32.lib")   // CoTaskMemFree
+
+#if LANG_CPP
+    #define __FOLDERID_RoamingAppData FOLDERID_RoamingAppData
+#else
+    #define __FOLDERID_RoamingAppData &FOLDERID_RoamingAppData
+#endif
+
+Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
+    Str8 result = { 0 };
+
+    // @todo: will likely have some sort of "init" function in the future where we can cache some
+    // of this stuff and then just copy it directly rather than having to do the work every time
+    //
+
+    M_Temp temp = M_GetTemp(1, &arena);
+
+    switch (type) {
+        case FS_PATH_EXE: {
+            WCHAR *lpFilename;
+            DWORD  nSize = 512;
+
+            DWORD err, count;
+            for (;;) {
+                // guess the buffer size, doubling the size each time it fails
+                //
+                nSize *= 2;
+                lpFilename = M_ArenaPush(temp.arena, WCHAR, nSize);
+
+                // get the module filename, this gives us the full executable path. if the buffer
+                // isn't big enough ERROR_INSUFFICIENT_BUFFER will be set. as the system doesn't
+                // actually tell us what the length of the buffer _should_ be we have to keep guessing
+                //
+                count = GetModuleFileNameW(0, lpFilename, nSize);
+                err   = GetLastError();
+
+                if (err != ERROR_INSUFFICIENT_BUFFER) { break; }
+
+                M_ArenaPopLast(temp.arena);
+            }
+
+            if (err == ERROR_SUCCESS) {
+                // successfully go the path, chop off the basename as it includes the full executable
+                // filename
+                //
+                while (count && lpFilename[count] != L'\\') {
+                    count -= 1;
+                }
+
+                lpFilename[count] = L'\0';
+
+                result = Win32_Str8FromWide(arena, lpFilename);
+            }
+            else {
+                Log_Error("Failed to get executable path (0x%x)", err);
+            }
+        }
+        break;
+        case FS_PATH_USER: {
+            // this is just annoying, this function uses references in C++ mode and a pointer in C mode
+            // thus we have to do this hacky work around using a define :folderid_hack
+            //
+            PWSTR ppszPath;
+            HRESULT hr = SHGetKnownFolderPath(__FOLDERID_RoamingAppData, 0, 0, &ppszPath);
+            if (hr == S_OK) {
+                result = Win32_Str8FromWide(arena, ppszPath);
+            }
+            else {
+                // @todo: maybe we should fallback to attempt to read the environment variable %APPDATA%
+                // and return that
+                //
+                Log_Error("Failed to get path (hr = 0x%x)", hr);
+            }
+
+            CoTaskMemFree(ppszPath);
+        }
+        break;
+        case FS_PATH_TEMP: {
+            DWORD  nBufferSize = MAX_PATH + 1; // apparently this is the max possible return value
+            WCHAR *lpBuffer    = M_ArenaPush(temp.arena, WCHAR, nBufferSize);
+
+            // :note documentation says to use GetTempPath2W but this is only really available
+            // in very new sdk versions. there isn't really any difference between them anyway
+            // when we eventually switch to have an "init" function we can test for the existence
+            // and fallback to GetTempPathW if not available
+            //
+            nBufferSize = GetTempPathW(nBufferSize, lpBuffer);
+            if (nBufferSize > 0) {
+                // for whatever reason the temp path has a trailing backslash so we remove it
+                //
+                lpBuffer[nBufferSize - 1] = 0;
+
+                result = Win32_Str8FromWide(arena, lpBuffer);
+            }
+            else {
+                Log_Error("Failed to get temporary path (0x%x)", GetLastError());
+            }
+        }
+        break;
+        case FS_PATH_WORKING: {
+            // :threading this is not thread-safe if we have a way of setting the working directory
+            // as we don't at the moment it doesn't really matter
+            //
+            DWORD nBufferLength = GetCurrentDirectoryW(0, 0);
+            if (nBufferLength > 0) {
+                WCHAR *lpBuffer = M_ArenaPush(temp.arena, WCHAR, nBufferLength);
+                if (GetCurrentDirectoryW(nBufferLength, lpBuffer)) {
+                    result = Win32_Str8FromWide(arena, lpBuffer);
+                }
+            }
+            else {
+                Log_Error("Failed to get working path (0x%x)", GetLastError());
+            }
+        }
+        break;
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+#elif OS_MACOS
+    #error "macOS filesystem subsystem not implemented"
+#elif OS_LINUX
+    #error "linux filesystem subsystem not implemented"
+#elif OS_SWITCH
+    #error "switchbrew filesystem subsystem not implemented"
+#endif
+
+Str8 FS_ReadEntireFile(M_Arena *arena, Str8 path) {
+    Str8 result = { 0 };
+
+    OS_Handle file = FS_OpenFile(path, FS_ACCESS_READ);
+
+    result.count = FS_SizeFromHandle(file);
+    result.data  = M_ArenaPush(arena, U8, result.count);
+
+    FS_ReadFile(file, result, 0);
+
+    FS_CloseFile(file);
+
+    return result;
 }
 
 #endif  // CORE_C_

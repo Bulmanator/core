@@ -14,32 +14,42 @@ struct ListNode {
     int value;
 };
 
+#define LogAssert(exp) do { \
+    if (!(exp)) { \
+        Log_Error("%s", #exp); \
+        printf("... failed\n"); \
+    } \
+    else { \
+        printf("... passed\n"); \
+    } \
+} while (0)
+
+#if 0
 #define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); Assert((a) == (v)); printf(" ... passed\n")
 #define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); Assert((a) == (v)); printf(" ... passed\n")
 #define ExpectStrValue(a, v) printf("    Testing... %s == %s", #a, v); Assert(Str8_Equal(a, Sz(v), 0)); printf("... passed\n")
 #define ExpectTrue(a) printf("    Testing... %s == true", #a); Assert(a); printf("... passed\n")
 #define ExpectFalse(a) printf("    Testing... %s == false", #a); Assert(!(a)); printf("... passed\n")
+#else
+#define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); LogAssert((a) == (v));
+#define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); LogAssert((a) == (v));
+#define ExpectStrValue(a, v) printf("    Testing... %s == %s", #a, v); LogAssert(Str8_Equal(a, Sz(v), 0));
+#define ExpectTrue(a) printf("    Testing... %s == true", #a); LogAssert(a);
+#define ExpectFalse(a) printf("    Testing... %s == false", #a); LogAssert(!(a));
+#endif
 
 internal COMPARE_FUNC(CompareInt) {
-    S32 result = 0;
-
     int ai = *(int *) a;
     int bi = *(int *) b;
 
-    if      (ai < bi) { result = -1; }
-    else if (bi < ai) { result =  1; }
-
-    return result;
+    return (ai - bi);
 }
 
 internal COMPARE_FUNC(CompareListNode) {
     ListNode *node_a = cast(ListNode *) a;
     ListNode *node_b = cast(ListNode *) b;
 
-    if      (node_a->value < node_b->value) { return -1; }
-    else if (node_a->value > node_b->value) { return  1; }
-
-    return 0;
+    return (node_a->value - node_b->value);
 }
 
 static int ExecuteTests(int argc, char **argv) {
@@ -47,6 +57,11 @@ static int ExecuteTests(int argc, char **argv) {
     //
     (void) argc;
     (void) argv;
+
+    {
+        Log_Context *logger = Log_Alloc();
+        Log_Select(logger);
+    }
 
     // Basic platform macros
     //
@@ -578,6 +593,8 @@ static int ExecuteTests(int argc, char **argv) {
 
     printf("-- Logging\n");
     {
+        Log_Context *global = Log_Get();
+
         Log_Context *log = Log_Alloc();
         Log_Select(log);
 
@@ -611,10 +628,107 @@ static int ExecuteTests(int argc, char **argv) {
 
         log = Log_Get();
         Log_Release(log);
+
+        Log_Select(global);
     }
     printf("\n");
 
-    printf("[all tests passed successfully]\n");
+    printf("-- File System\n");
+    {
+        M_Temp temp = M_GetTemp(0, 0);
+
+        // system paths
+        //
+        Str8 exe_path     = FS_GetPath(temp.arena, FS_PATH_EXE);
+        Str8 user_path    = FS_GetPath(temp.arena, FS_PATH_USER);
+        Str8 temp_path    = FS_GetPath(temp.arena, FS_PATH_TEMP);
+        Str8 working_path = FS_GetPath(temp.arena, FS_PATH_WORKING);
+
+        printf("    exe     path = %.*s\n", Sv(exe_path));
+        printf("    user    path = %.*s\n", Sv(user_path));
+        printf("    temp    path = %.*s\n", Sv(temp_path));
+        printf("    working path = %.*s\n", Sv(working_path));
+
+        // directory listing
+        //
+        FS_List list = FS_ListPath(temp.arena, exe_path, FS_LIST_RECURSIVE);
+
+        printf("    list of %.*s:\n", Sv(exe_path));
+
+        U32 it = 0;
+        for (FS_Entry *e = list.first; e != 0; e = e->next) {
+            printf("      [%2d] = %.*s\n", it, Sv(e->path));
+            it += 1;
+        }
+
+        // writing a file
+        //
+        OS_Handle file = FS_OpenFile(S("test.txt"), FS_ACCESS_WRITE);
+
+        U64 offset = 0;
+
+        offset += FS_WriteFile(file, S("Hello, World! | "), offset);
+        offset += FS_WriteFile(file, S("Hello, World! | "), offset);
+        offset += FS_WriteFile(file, S("Hello, World! | "), offset);
+
+        FS_AppendFile(file, S("End of file"));
+
+        ExpectIntValue(FS_PropertiesFromHandle(file), 0);
+        ExpectIntValue(FS_SizeFromHandle(file), 59); // should be 59 bytes long after writing
+
+        Str8 path = FS_PathFromHandle(temp.arena, file);
+        Str8 basename = Str8_GetBasename(path);
+        printf("    full path from handle is %.*s\n", Sv(path));
+        ExpectStrValue(basename, "test.txt");
+
+        FS_Time times = FS_TimeFromHandle(file);
+
+        printf("    times from handle:\n");
+        printf("      written:  %llu\n", times.written);
+        printf("      accessed: %llu\n", times.accessed);
+        printf("      created:  %llu\n", times.created);
+
+        FS_CloseFile(file);
+
+        // reading a file
+        //
+        Str8 contents = FS_ReadEntireFile(temp.arena, S("test.txt"));
+        ExpectStrValue(contents, "Hello, World! | Hello, World! | Hello, World! | End of file");
+
+        ExpectTrue(FS_CreateDirectory(S("test_dir")));
+
+        // from path
+        //
+        ExpectIntValue(FS_PropertiesFromPath(S("test_dir")), FS_PROPERTY_IS_DIRECTORY);
+        ExpectIntValue(FS_SizeFromPath(S("test.txt")), 59); // still 59 bytes after reading
+
+        times = FS_TimeFromPath(S("test_dir"));
+
+        printf("    times from path:\n");
+        printf("      written:  %llu\n", times.written);
+        printf("      accessed: %llu\n", times.accessed);
+        printf("      created:  %llu\n", times.created);
+
+        // cleanup
+        //
+        ExpectTrue(FS_RemoveFile(S("test.txt")));
+        ExpectTrue(FS_RemoveDirectory(S("test_dir")));
+
+        M_ReleaseTemp(temp);
+    }
+    printf("\n");
+
+    Log_MessageList *errors = Log_GetMessages();
+    if (errors->num_messages != 0) {
+        printf("[some tests failed]\n");
+
+        for (Log_MessageNode *n = errors->first; n != 0; n = n->next) {
+            printf("  %.*s line %d failed: %.*s\n", Sv(n->func), n->line, Sv(n->message));
+        }
+    }
+    else {
+        printf("[all tests passed successfully]\n");
+    }
 
     return 0;
 }
