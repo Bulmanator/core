@@ -7,13 +7,16 @@
 extern "C" {
 #endif
 
-// :header This is the header porition of this file, it provides all of the necessary defines for the
-// code to be used.
+// :header This is the header porition of this file, it provides all of the necessary
+// defines for the code to be used.
 //
-// The beginning of the implementation can be found here :impl
+// The beginning of the implementation can be found by searching :impl. The
+// implementation sections can be found by searching :impl_<section_name> where the
+// section names are defined just below
 //
-// This header provides the following 'core' implementaitons for quick project startup, other header
-// files will rely on this file when providing further functionality:
+// This header provides the following 'core' implementaitons for quick project
+// startup, other header files will rely on this file when providing further
+// functionality:
 //
 //     - :core_types | core types used throughout
 //     - :macros     | utility macros and helpers
@@ -25,21 +28,25 @@ extern "C" {
 //     - :filesystem | filesystem + file io interface
 //
 // This header can be included in one of three ways:
-//     1. As a standalone header by simply including the header with no specific pre-defines. This is
-//        to be used with a linked library version of the implementation via CORE_LIB or '3.' below
+//
+//     1. As a standalone header by simply including the header with no specific
+//     pre-defines. This is to be used with a linked library version of the
+//     implementation via CORE_LIB or '3.' below
 //
 //         ...
 //         #include "core.h"
 //         ...
 //
-//     2. As a fully implemented module at include time by defining CORE_MODULE before including the header
+//     2. As a fully implemented module at include time by defining CORE_MODULE
+//     before including the header
 //         ...
 //         #define CORE_MODULE
 //         #include "core.h"
 //         ...
 //
-//     3. As a standalone 'c' file that contains the implementation code only, by defining CORE_IMPL
-//        before including the header. This is used in conjunction with '1.' above
+//     3. As a standalone 'c' file that contains the implementation code only, by
+//     defining CORE_IMPL before including the header. This is used in conjunction
+//     with '1.' above
 //
 //        ...
 //        #include "core.h"
@@ -50,8 +57,9 @@ extern "C" {
 //        #include "core.h"
 //        ...
 //
-// Optionally CORE_LIB can be defined to correctly export/import api functions to allow the header to be built
-// as a shared library.
+// Optionally CORE_LIB can be defined to correctly export/import api functions to
+// allow the header to be built as a shared library.
+//
 //      library.c
 //          ...
 //          #define CORE_LIB
@@ -749,8 +757,8 @@ struct Codepoint {
     U32 value;
 };
 
-function Codepoint Utf8_Decode(Str8 str);
-function U32 Utf8_Encode(U8 *output, U32 codepoint); // output expects enough space for the encoded codepoint
+function Codepoint UTF8_Decode(Str8 str);
+function U32 UTF8_Encode(U8 *output, U32 codepoint); // output expects enough space for the encoded codepoint
 
 // character utilities
 //
@@ -838,6 +846,7 @@ function void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, c
 // :filesystem
 // --------------------------------------------------------------------------------
 //
+
 typedef U32 FS_Properties;
 enum {
     FS_PROPERTY_IS_DIRECTORY = (1 << 0),
@@ -945,6 +954,10 @@ function Str8 FS_GetPath(M_Arena *arena, FS_PathType type);
 
 #if COMPILER_MSVC
 
+//
+// :msvc_intrinsics
+//
+
 #include <intrin.h>
 
 U32 CountLeadingZeros_U32(U32 x) {
@@ -1045,6 +1058,11 @@ B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *compa
 
 #elif (COMPILER_CLANG || COMPILER_GCC)
 
+//
+// :clang_intrinsics
+// :gcc_intrinsics
+//
+
 U32 CountLeadingZeros_U32(U32 x) {
     U32 result = x ? __builtin_clz(x) : 32;
     return result;
@@ -1127,8 +1145,8 @@ B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, void *compa
 
 #endif
 
-// agnostic across all compilers, msvc has specific intrinsics for this but under optimisations correctly
-// detects these as the right instructions
+// agnostic across all compilers, msvc has specific intrinsics for this but under
+// optimisations correctly detects these as the right instructions
 //
 U32 RotateLeft_U32(U32 x, U32 count) {
     count &= 31;
@@ -1481,9 +1499,11 @@ void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) 
 // --------------------------------------------------------------------------------
 //
 
-// os virtual memory
-//
 #if OS_WINDOWS
+
+//
+// :win32_arena
+//
 
 void *M_Reserve(U64 size) {
     void *result = VirtualAlloc(0, size, MEM_RESERVE, PAGE_NOACCESS);
@@ -1523,6 +1543,11 @@ U64 M_GetAllocationGranularity() {
 #elif OS_MACOS
 #error "macOS memory subsystem not implemented"
 #elif OS_LINUX
+
+//
+// :linux_arena
+//
+
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -1563,8 +1588,12 @@ U64 M_GetAllocationGranularity() {
 
 #elif OS_SWITCH
 
-// we unfortunately don't have any other options to allocate memory with switchbrew, malloc/free are
-// the only userspace general address space allocators available to us
+//
+// :switch_arena
+//
+// we unfortunately don't have any other options to allocate memory with switchbrew,
+// malloc/free are the only userspace general address space allocators available to
+// us
 //
 #include <stdlib.h>
 
@@ -1660,14 +1689,14 @@ internal M_Arena *__M_AllocSizedArena(U64 limit, U64 initial_commit, M_ArenaFlag
 
 M_Arena *M_AllocArenaArgs(U64 limit, U64 initial_commit, M_ArenaFlags flags) {
 #if OS_SWITCH
-    // :note ~switchbrew
+    // :note ~switch
     //
-    // swtichbrew doesn't support virtual memory semantics, this means we can't just ask
-    // for 64GiB of virtual address space to commit later and get away with it like on
-    // other operating systems.
+    // swtichbrew doesn't support virtual memory semantics, this means we can't just
+    // ask for 64GiB of virtual address space to commit later and get away with it
+    // like on other operating systems.
     //
-    // to work around this we force growable arenas on and clamp the initial arena size to a
-    // more reasonable size
+    // to work around this we force growable arenas on and clamp the initial arena
+    // size to a more reasonable size
     //
     flags &= ~M_ARENA_DONT_GROW;
     limit  = Min(limit, M_ARENA_MAX_RESERVE_SWITCH);
@@ -1730,7 +1759,8 @@ void *M_ArenaPushFrom(M_Arena *arena, U64 size, M_ArenaFlags flags, U64 alignmen
     U64 end    = offset + size;
 
     if (end > current->limit) {
-        // not enough space in current arena so allocate a new one if growing is permitted
+        // not enough space in current arena so allocate a new one if growing is
+        // permitted
         //
         if ((arena->flags & M_ARENA_DONT_GROW) == 0) {
             U64 reserve   = Max(size + M_ARENA_MIN_OFFSET, M_ARENA_GROW_RESERVE_SIZE);
@@ -1800,8 +1830,8 @@ void M_ArenaPopTo(M_Arena *arena, U64 offset) {
 
     if (local_offset <= current->offset) {
         // as we have popped back explicitly the 'last_offset' is no longer valid so
-        // set that to this offset thus calling 'pop last' after manually setting the offset
-        // doesn't do anything
+        // set that to this offset thus calling 'pop last' after manually setting the
+        // offset doesn't do anything
         //
         current->offset      = local_offset;
         current->last_offset = local_offset;
@@ -1977,7 +2007,8 @@ B32 Str8_Equal(Str8 a, Str8 b, Str8_EqualFlags flags) {
     return result;
 }
 
-// @todo: probably want to move away from vsnprintf to allow us to have custom type printing etc.
+// @todo: probably want to move away from vsnprintf to allow us to have custom type
+// printing etc.
 //
 #include <stdio.h> // vsnprintf
 
@@ -2001,8 +2032,8 @@ Str8 Str8_FormatArgs(M_Arena *arena, const char *format, va_list args) {
 
     S64 count = Str8_ProcessFormat(buffer, buffer_size, format, args);
     if (count >= buffer_size) {
-        // not enough space in the initial guess so pop the entire buffer, push the correct size and
-        // process format again
+        // not enough space in the initial guess so pop the entire buffer, push the
+        // correct size and process format again
         //
         M_ArenaPopLast(arena);
 
@@ -2014,6 +2045,8 @@ Str8 Str8_FormatArgs(M_Arena *arena, const char *format, va_list args) {
     else if (count < 0) {
         // error occurred
         //
+        M_ArenaPopLast(arena);
+
         result.count = 0;
         result.data  = 0;
     }
@@ -2159,7 +2192,9 @@ Str8 Str8_GetBasename(Str8 path) {
 }
 
 Str8 Str8_GetDirname(Str8 path) {
-    Str8 result = Sl("."); // if a path separator isn't found, use 'current working directory'
+    // if a path separator isn't found, use 'current working directory'
+    //
+    Str8 result = Sl(".");
 
     for (S64 it = path.count - 1; it >= 0; --it) {
         if (Chr_IsPathSeparator(path.data[it])) {
@@ -2197,9 +2232,7 @@ Str8 Str8_StripExtension(Str8 path) {
     return result;
 }
 
-// return true if successfully encoded/decoded, false if an error occurred
-//
-Codepoint Utf8_Decode(Str8 str) {
+Codepoint UTF8_Decode(Str8 str) {
     Codepoint result;
 
     local_persist const U8 lengths[] = {
@@ -2222,8 +2255,10 @@ Codepoint Utf8_Decode(Str8 str) {
             codepoint  |= (data[it] & 0x3F);
         }
 
+        // don't go past the end of the string, may produce invalid codepoints
+        //
+        result.count = avail;
         result.value = codepoint;
-        result.count = avail; // don't go past the end of the string, may produce invalid codepoints
     }
     else {
         result.value = '?';
@@ -2233,7 +2268,7 @@ Codepoint Utf8_Decode(Str8 str) {
     return result;
 }
 
-U32 Utf8_Encode(U8 *output, U32 codepoint) {
+U32 UTF8_Encode(U8 *output, U32 codepoint) {
     U32 result;
 
     if (codepoint <= 0x7F) {
@@ -2433,8 +2468,10 @@ void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, const char
 
 #if OS_WINDOWS
 
-// Win32
 //
+// :win32_filesystem
+//
+
 internal WCHAR *Win32_WideFromStr8(M_Arena *arena, Str8 str) {
     int    length = MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, 0, 0);
     WCHAR *result = M_ArenaPush(arena, WCHAR, length);
@@ -2514,7 +2551,7 @@ internal void Win32_ListPathRecurse(M_Arena *arena, FS_List *list, Str8 path, FS
 
             list->num_entries += 1;
 
-            if (recurse) { Win32_ListPathRecurse(arena, list, entry->path, flags); }
+            if (recurse && is_dir) { Win32_ListPathRecurse(arena, list, entry->path, flags); }
         }
 
         if (!FindNextFileW(find, &find_data)) {
@@ -2751,8 +2788,9 @@ Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
         HANDLE hFile = cast(HANDLE) file.v[0];
         M_Temp temp  = M_GetTemp(1, &arena);
 
-        // Push a 1KiB buffer as an initial guess, if that is too small the FILE_NAME_INFO will
-        // contain how long we need to make the buffer so pop last and retry with the correct length
+        // Push a 1KiB buffer as an initial guess, if that is too small the
+        // FILE_NAME_INFO will contain how long we need to make the buffer so pop
+        // last and retry with the correct length
         //
         DWORD dwBufferSize    = KB(1);
         U8 *lpFileInformation = M_ArenaPush(temp.arena, U8, dwBufferSize);
@@ -2951,6 +2989,7 @@ B32 FS_RemoveDirectory(Str8 path) {
 // :folderid_hack
 //
 #include <shlobj.h>
+
 #pragma comment(lib, "shell32.lib") // SHGetKnownFolderPath
 #pragma comment(lib, "ole32.lib")   // CoTaskMemFree
 
@@ -3077,7 +3116,618 @@ Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
 #elif OS_MACOS
     #error "macOS filesystem subsystem not implemented"
 #elif OS_LINUX
-    #error "linux filesystem subsystem not implemented"
+
+//
+// :linux_filesystem
+//
+
+#include <fcntl.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <dirent.h>
+#include <linux/limits.h>
+
+#define LINUX_DENTS_BUFFER_SIZE 1024
+
+typedef struct linux_dirent64 linux_dirent64_t;
+struct linux_dirent64 {
+    __ino64_t      d_ino;    /* 64-bit inode number */
+    __off64_t      d_off;    /* Not an offset; see getdents() */
+    unsigned short d_reclen; /* Size of this dirent */
+    unsigned char  d_type;   /* File type */
+    char           d_name[]; /* Filename (null-terminated) */
+};
+
+internal void Linux_ListPathRecursive(M_Arena *arena, FS_List *list, Str8 path, FS_ListFlags flags) {
+    M_Temp temp = M_GetTemp(1, &arena);
+    Str8 zpath  = Str8_Copy(temp.arena, path);
+
+    B32 recurse        = (flags & FS_LIST_RECURSIVE)      != 0;
+    B32 include_hidden = (flags & FS_LIST_INCLUDE_HIDDEN) != 0;
+
+    char *buffer = M_ArenaPush(temp.arena, char, LINUX_DENTS_BUFFER_SIZE);
+
+    int fd = open((const char *) zpath.data, O_RDONLY | O_DIRECTORY);
+    if (fd >= 0) {
+        for (;;) {
+            ssize_t nread = syscall(SYS_getdents64, fd, buffer, LINUX_DENTS_BUFFER_SIZE);
+            if (nread < 0) {
+                Log_Error("Failed to list directory '%.*s' (%d)", Sv(path), errno);
+                break;
+            }
+            else if (nread == 0) {
+                // done
+                //
+                break;
+            }
+
+            for (ssize_t off = 0; off < nread;) {
+                linux_dirent64_t *ent = cast(linux_dirent64_t *) (buffer + off);
+                off += ent->d_reclen;
+
+                B32 should_skip = false;
+                B32 is_hidden   = false;
+                B32 is_dir      = (ent->d_type == DT_DIR);
+
+                Str8 basename   = Sz(ent->d_name);
+
+                if (basename.count == 2 && basename.data[0] == '.' && basename.data[1] == '.') {
+                    // always skip relative '..' entry
+                    //
+                    should_skip = true;
+                }
+                else if (basename.count && basename.data[0] == '.') {
+                    // always skip relative '.' or skip names starting with '.' if
+                    // the user hasn't requested the inclusion of hidden files
+                    //
+                    should_skip = ((basename.count == 1) || !include_hidden);
+                    is_hidden   = true;
+                }
+
+                if (!should_skip) {
+                    FS_Entry *entry = M_ArenaPush(arena, FS_Entry);
+
+                    entry->path = Sf(arena, "%.*s/%.*s", Sv(path), Sv(basename));
+
+                    entry->props |= is_hidden ? FS_PROPERTY_IS_HIDDEN    : 0;
+                    entry->props |= is_dir    ? FS_PROPERTY_IS_DIRECTORY : 0;
+
+                    struct stat stbuf;
+                    if (stat((const char *) entry->path.data, &stbuf) == 0) {
+                        entry->size = stbuf.st_size;
+                        entry->times.written  = (1e9 * stbuf.st_mtim.tv_nsec) + stbuf.st_mtim.tv_sec;
+                        entry->times.accessed = (1e9 * stbuf.st_atim.tv_nsec) + stbuf.st_atim.tv_sec;
+                        entry->times.created  = 0;
+                    }
+
+                    SLL_Enqueue(list->first, list->last, entry);
+
+                    list->num_entries += 1;
+
+                    if (recurse && is_dir) { Linux_ListPathRecursive(arena, list, entry->path, flags); }
+                }
+            }
+        }
+
+        close(fd);
+    }
+    else {
+        Log_Error("Failed to open '%.*s' for reading (%d)", Sv(path), errno);
+    }
+
+    M_ReleaseTemp(temp);
+}
+
+FS_List FS_ListPath(M_Arena *arena, Str8 path, FS_ListFlags flags) {
+    FS_List result = { 0 };
+
+    Linux_ListPathRecursive(arena, &result, path, flags);
+    return result;
+}
+
+OS_Handle FS_OpenFile(Str8 path, FS_Access access) {
+    OS_Handle result = OS_NilHandle();
+
+    if (access) {
+        M_Temp temp = M_GetTemp(0, 0);
+        Str8 zpath  = Str8_Copy(temp.arena, path);
+
+        int flags = O_RDONLY;
+        mode_t mode = 0;
+
+        if (access & FS_ACCESS_WRITE) {
+            flags = ((access & FS_ACCESS_READ) ? O_RDWR : O_WRONLY) | O_CREAT;
+            mode  = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH; // 0644 permissions
+        }
+
+        int fd = open((const char *) zpath.data, flags, mode);
+        if (fd >= 0) {
+            result.v[0] = cast(U64) fd;
+        }
+        else {
+            Log_Error("Failed to open file '%.*s' (%d)", Sv(path), errno);
+        }
+
+        M_ReleaseTemp(temp);
+    }
+    return result;
+}
+
+void FS_CloseFile(OS_Handle file) {
+    if (OS_HandleValid(file)) {
+        int fd = cast(int) file.v[0];
+        close(fd);
+    }
+}
+
+B32 FS_RemoveFile(Str8 path) {
+    M_Temp temp = M_GetTemp(0, 0);
+    Str8 zpath  = Str8_Copy(temp.arena, path);
+
+    B32 result = unlink((const char *) zpath.data) == 0;
+
+    M_ReleaseTemp(temp);
+    return result;
+}
+
+S64 FS_ReadFile(OS_Handle file, Str8 data, U64 offset) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        int    fd        = cast(int) file.v[0];
+        U8    *ptr       = data.data;
+        size_t remaining = data.count;
+
+        while (remaining > 0) {
+            ssize_t nread = pread(fd, ptr, remaining, offset);
+            if (nread >= 0) {
+                remaining -= nread;
+                ptr       += nread;
+                offset    += nread;
+            }
+            else {
+                Log_Error("Failed to read %llu bytes at offset %llu (%d)", remaining, offset, errno);
+                break;
+            }
+        }
+
+        Assert(remaining >= 0);
+
+        result = cast(S64) (ptr - data.data);
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+S64 FS_WriteFile(OS_Handle file, Str8 data, U64 offset) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        int    fd        = cast(int) file.v[0];
+        U8    *ptr       = data.data;
+        size_t remaining = data.count;
+
+        while (remaining > 0) {
+            ssize_t nwritten = pwrite(fd, ptr, remaining, offset);
+            if (nwritten >= 0) {
+                remaining -= nwritten;
+                ptr       += nwritten;
+                offset    += nwritten;
+            }
+            else {
+                Log_Error("Failed to read %llu bytes at offset %llu (%d)", remaining, offset, errno);
+                break;
+            }
+        }
+
+        Assert(remaining >= 0);
+
+        result = cast(S64) (ptr - data.data);
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+S64 FS_AppendFile(OS_Handle file, Str8 data) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        int fd = cast(int) file.v[0];
+
+        struct stat stbuf;
+        if (fstat(fd, &stbuf) == 0) {
+            U64 offset = stbuf.st_size;
+            result     = FS_WriteFile(file, data, offset);
+        }
+        else {
+            Log_Error("Failed to get end-of-file offset (%d)", errno);
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+FS_Properties FS_PropertiesFromHandle(OS_Handle file) {
+    FS_Properties result = 0;
+
+    if (OS_HandleValid(file)) {
+        int fd = cast(int) file.v[0];
+
+        struct stat stbuf;
+        if (fstat(fd, &stbuf) == 0) {
+            M_Temp temp = M_GetTemp(0, 0);
+            Str8 path   = FS_PathFromHandle(temp.arena, file);
+
+            B32 is_dir    = ((stbuf.st_mode & S_IFMT) == S_IFDIR);
+            B32 is_hidden = (path.count && path.data[0] == '.');
+
+            result |= is_dir    ? FS_PROPERTY_IS_DIRECTORY : 0;
+            result |= is_hidden ? FS_PROPERTY_IS_HIDDEN    : 0;
+
+            M_ReleaseTemp(temp);
+        }
+        else {
+            Log_Error("Failed to get file descriptor information (%d)", errno);
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+FS_Time FS_TimeFromHandle(OS_Handle file) {
+    FS_Time result = { 0 };
+
+    if (OS_HandleValid(file)) {
+        int fd = cast(int) file.v[0];
+
+        struct stat stbuf;
+        if (fstat(fd, &stbuf) == 0) {
+            result.written  = (1e9 * stbuf.st_mtim.tv_sec) + stbuf.st_mtim.tv_nsec;
+            result.accessed = (1e9 * stbuf.st_atim.tv_sec) + stbuf.st_mtim.tv_nsec;
+            result.created  = 0; // not available on unix ?
+        }
+        else {
+            Log_Error("fstat failed on '%d' (%d)", fd, errno);
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
+    Str8 result = { 0 };
+
+    if (OS_HandleValid(file)) {
+        M_Temp temp = M_GetTemp(1, &arena);
+
+        int  fd      = cast(int) file.v[0];
+        Str8 fd_path = Sf(temp.arena, "/proc/self/fd/%d", fd);
+
+        char *buffer;
+        S64 size = 512;
+
+        ssize_t count;
+        for (;;) {
+            // we have to keep iterating towards the required buffer size
+            // because readlink wont actually tell us
+            //
+            size *= 2;
+            buffer = M_ArenaPush(temp.arena, char, size);
+
+            count = readlink((const char *) fd_path.data, buffer, size);
+            if (count < size) { break; }
+
+            M_ArenaPopLast(temp.arena);
+        }
+
+        if (count > 0) {
+            result.count = count;
+            result.data  = M_ArenaPushCopy(arena, buffer, U8, count + 1);
+        }
+        else {
+            Log_Error("readlink failed on '%.*s' (%d)", Sv(fd_path), errno);
+        }
+
+        M_ReleaseTemp(temp);
+    }
+
+    return result;
+}
+
+U64 FS_SizeFromHandle(OS_Handle file) {
+    S64 result = 0;
+
+    if (OS_HandleValid(file)) {
+        int fd = cast(int) file.v[0];
+
+        struct stat stbuf;
+        if (fstat(fd, &stbuf) == 0) {
+            result = stbuf.st_size;
+        }
+        else {
+            Log_Error("fstat failed on '%d' (%d)", fd, errno);
+        }
+    }
+    else {
+        Log_Error("Invalid file handle");
+    }
+
+    return result;
+}
+
+FS_Properties FS_PropertiesFromPath(Str8 path) {
+    FS_Properties result = 0;
+
+    M_Temp temp = M_GetTemp(0, 0);
+    Str8 zpath  = Str8_Copy(temp.arena, path);
+
+    struct stat stbuf;
+    if (stat((const char *) zpath.data, &stbuf) == 0) {
+        B32 is_dir    = ((stbuf.st_mode & S_IFMT) == S_IFDIR);
+        B32 is_hidden = (path.count && path.data[0] == '.');
+
+        result |= is_dir    ? FS_PROPERTY_IS_DIRECTORY : 0;
+        result |= is_hidden ? FS_PROPERTY_IS_HIDDEN    : 0;
+    }
+    else {
+        Log_Error("stat failed on path '%.*s' (%d)", Sv(path), errno);
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+FS_Time FS_TimeFromPath(Str8 path) {
+    FS_Time result = { 0 };
+
+    M_Temp temp = M_GetTemp(0, 0);
+    Str8 zpath  = Str8_Copy(temp.arena, path);
+
+    struct stat stbuf;
+    if (stat((const char *) zpath.data, &stbuf) == 0) {
+        result.written  = (1e9 * stbuf.st_mtim.tv_sec) + stbuf.st_mtim.tv_nsec;
+        result.accessed = (1e9 * stbuf.st_atim.tv_sec) + stbuf.st_mtim.tv_nsec;
+        result.created  = 0; // not available on unix ?
+    }
+    else {
+        Log_Error("stat failed on path '%.*s' (%d)", Sv(path), errno);
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+U64 FS_SizeFromPath(Str8 path) {
+    U64 result = 0;
+
+    M_Temp temp = M_GetTemp(0, 0);
+    Str8 zpath  = Str8_Copy(temp.arena, path);
+
+    struct stat stbuf;
+    if (stat((const char *) zpath.data, &stbuf) == 0) {
+        result = stbuf.st_size;
+    }
+    else {
+        Log_Error("stat failed on path '%.*s' (%d)", Sv(path), errno);
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+B32 FS_CreateDirectory(Str8 path) {
+    B32 result = true;
+
+    M_Temp temp = M_GetTemp(0, 0);
+    Str8 cpy    = Str8_Copy(temp.arena, path);
+
+    char *zpath = cast(char *) cpy.data;
+
+    S64 it = 0;
+    while (zpath[it]) {
+        if (zpath[it] == '/') {
+            zpath[it] = 0;
+
+            mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH; // 0755
+            if (mkdir(zpath, mode) != 0) {
+                if (errno != EEXIST) {
+                    Log_Error("Failed to create directory '%s' (%d)", zpath, errno);
+
+                    result = false;
+                    break;
+                }
+            }
+
+            zpath[it] = '/';
+        }
+
+        it += 1;
+    }
+
+    if (result) {
+        mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH; // 0755
+        if (mkdir(zpath, mode) != 0) {
+            result = false;
+            if (errno == EEXIST) {
+                struct stat stbuf;
+                if (stat(zpath, &stbuf) == 0) {
+                    result = ((stbuf.st_mode & S_IFMT) == S_IFDIR);
+                }
+            }
+        }
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+B32 FS_RemoveDirectory(Str8 path) {
+    M_Temp temp = M_GetTemp(0, 0);
+    Str8 zpath  = Str8_Copy(temp.arena, path);
+
+    B32 result = rmdir((const char *) zpath.data) == 0;
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
+Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
+    Str8 result = { 0 };
+
+    M_Temp temp = M_GetTemp(1, &arena);
+
+    switch (type) {
+        case FS_PATH_EXE: {
+            char *buffer;
+            S64 size = 512;
+
+            ssize_t count;
+            for (;;) {
+                // we have to keep iterating towards the required buffer size
+                // because readlink wont actually tell us
+                //
+                size *= 2;
+                buffer = M_ArenaPush(temp.arena, char, size);
+
+                count = readlink("/proc/self/exe", buffer, size);
+                if (count < size) { break; }
+
+                M_ArenaPopLast(temp.arena);
+            }
+
+            if (count > 0) {
+                while (buffer[count] != '/') { count -= 1; }
+
+                buffer[count] = 0;
+
+                result.count = count;
+                result.data  = M_ArenaPushCopy(arena, buffer, U8, count + 1);
+            }
+            else {
+                Log_Error("readlink failed on /proc/self/exe (%d)", errno);
+            }
+        }
+        break;
+        case FS_PATH_USER: {
+            // @todo: this can be changed to use our own loaded environment variables
+            // which we can get by reading /proc/self/environ on an init call
+            //
+            if (__environ) {
+                Str8 home_dir = { 0 };
+                Str8 xdg_dir  = { 0 };
+
+                for (U32 it = 0; __environ[it] != 0; it += 1) {
+                    Str8 env = Sz(__environ[it]);
+                    if (Str8_Equal(env, S("XDG_DATA_HOME"), STR8_EQUAL_FLAG_INEXACT_RHS)) {
+                        xdg_dir = Str8_RemoveBeforeFirst(env, '=');
+
+                        // we only really need this, $HOME is a fallback if
+                        // this is unset
+                        //
+                        break;
+                    }
+                    else if (Str8_Equal(env, S("HOME"), STR8_EQUAL_FLAG_INEXACT_RHS)) {
+                        home_dir = Str8_RemoveBeforeFirst(env, '=');
+                    }
+                }
+
+                if (xdg_dir.count || home_dir.count) {
+                    if (!xdg_dir.count) {
+                        // this is the defined default as per specifiction
+                        //
+                        result = Sf(arena, "%.*s/.local/share", Sv(home_dir));
+                    }
+                    else {
+                        result = Str8_Copy(arena, xdg_dir);
+                    }
+                }
+                else {
+                    Log_Error("Failed to get user home directory");
+                }
+            }
+            else {
+                Log_Error("__environ variable was null");
+            }
+        }
+        break;
+        case FS_PATH_TEMP: {
+            Str8 temp_dir = Sl("/tmp");
+
+            if (__environ) {
+                // look for $TEMP or $TMP set by user and use that if it is
+                // set, otherwise we fallback to the globally available /tmp
+                //
+                for (U32 it = 0; __environ[it] != 0; it += 1) {
+                    Str8 env = Sz(__environ[it]);
+                    if (Str8_Equal(env, S("TEMP"), STR8_EQUAL_FLAG_INEXACT_RHS)) {
+                        temp_dir = Str8_RemoveBeforeFirst(env, '=');
+                        break;
+                    }
+                    else if (Str8_Equal(env, S("TMP"), STR8_EQUAL_FLAG_INEXACT_RHS)) {
+                        temp_dir = Str8_RemoveBeforeFirst(env, '=');
+                        break;
+                    }
+                }
+
+            }
+
+            result = Str8_Copy(arena, temp_dir);
+        }
+        break;
+        case FS_PATH_WORKING: {
+            size_t size  = PATH_MAX;
+            char *buffer = M_ArenaPush(temp.arena, char, size);
+
+            for (;;) {
+                if (getcwd(buffer, size)) {
+                    break;
+                }
+                else if (errno != ERANGE) {
+                    Log_Error("Failed to get current directory (%d)", errno);
+
+                    buffer = 0;
+                    break;
+                }
+
+                M_ArenaPopLast(temp.arena);
+
+                size  *= 2;
+                buffer = M_ArenaPush(temp.arena, char, size);
+            }
+
+            if (buffer) { result = Str8_Copy(arena, Sz(buffer)); }
+        }
+        break;
+        default: {} break;
+    }
+
+    M_ReleaseTemp(temp);
+
+    return result;
+}
+
 #elif OS_SWITCH
     #error "switchbrew filesystem subsystem not implemented"
 #endif

@@ -521,13 +521,13 @@ static int ExecuteTests(int argc, char **argv) {
 
         Str8 hira_a = Sl("\xE3\x81\x82");
 
-        Codepoint c = Utf8_Decode(hira_a);
+        Codepoint c = UTF8_Decode(hira_a);
 
         ExpectIntValue(c.count, 3);
         ExpectIntValue(c.value, 0x3042);
 
         U8 value[4] = { 0 };
-        U32 count = Utf8_Encode(value, c.value);
+        U32 count = UTF8_Encode(value, c.value);
 
         ExpectIntValue(count, 3);
         ExpectIntValue(*(U32 *) value, 0x8281e3);
@@ -657,7 +657,7 @@ static int ExecuteTests(int argc, char **argv) {
 
         U32 it = 0;
         for (FS_Entry *e = list.first; e != 0; e = e->next) {
-            printf("      [%2d] = %.*s\n", it, Sv(e->path));
+            printf("      [%2d] = %.*s%c\n", it, Sv(e->path), (e->props & FS_PROPERTY_IS_DIRECTORY) ? '*' : ' ');
             it += 1;
         }
 
@@ -715,6 +715,18 @@ static int ExecuteTests(int argc, char **argv) {
         ExpectTrue(FS_RemoveDirectory(S("test_dir")));
 
         M_ReleaseTemp(temp);
+    }
+    printf("\n");
+
+    printf("-- Leak\n");
+    {
+        // this will catch any leaked temporary memory calls
+        //
+        M_Temp a = M_GetTemp(0, 0);
+        M_Temp b = M_GetTemp(1, &a.arena);
+
+        ExpectIntValue(a.arena->offset, M_ARENA_MIN_OFFSET);
+        ExpectIntValue(b.arena->offset, M_ARENA_MIN_OFFSET);
     }
     printf("\n");
 
