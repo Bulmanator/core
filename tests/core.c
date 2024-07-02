@@ -24,19 +24,11 @@ struct ListNode {
     } \
 } while (0)
 
-#if 0
-#define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); Assert((a) == (v)); printf(" ... passed\n")
-#define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); Assert((a) == (v)); printf(" ... passed\n")
-#define ExpectStrValue(a, v) printf("    Testing... %s == %s", #a, v); Assert(Str8_Equal(a, Sz(v), 0)); printf("... passed\n")
-#define ExpectTrue(a) printf("    Testing... %s == true", #a); Assert(a); printf("... passed\n")
-#define ExpectFalse(a) printf("    Testing... %s == false", #a); Assert(!(a)); printf("... passed\n")
-#else
 #define ExpectIntValue(a, v) printf("    Testing... %s == %llu", #a, (U64) v); LogAssert((a) == (v));
 #define ExpectFloatValue(a, v) printf("    Testing... %s == %f", #a, v); LogAssert((a) == (v));
 #define ExpectStrValue(a, v) printf("    Testing... %s == %s", #a, v); LogAssert(Str8_Equal(a, Sz(v), 0));
 #define ExpectTrue(a) printf("    Testing... %s == true", #a); LogAssert(a);
 #define ExpectFalse(a) printf("    Testing... %s == false", #a); LogAssert(!(a));
-#endif
 
 internal COMPARE_FUNC(CompareInt) {
     int ai = *(int *) a;
@@ -58,10 +50,7 @@ static int ExecuteTests(int argc, char **argv) {
     (void) argc;
     (void) argv;
 
-    {
-        Log_Context *logger = Log_Alloc();
-        Log_Select(logger);
-    }
+    Log_Init();
 
     // Basic platform macros
     //
@@ -419,6 +408,21 @@ static int ExecuteTests(int argc, char **argv) {
             printf("    node[%d].value = %d\n", it, nodes[it].value);
         }
 
+        // Byte/bit swapping
+        //
+        U8  x8  = 0xF0;
+        U16 x16 = 0xFF00;
+        U32 x32 = 0xFFFF0000;
+        U64 x64 = 0xFF00FF00FF00FF00;
+
+        ExpectIntValue(SwapBytes_U16(x16), 0x00FF);
+        ExpectIntValue(SwapBytes_U32(x32), 0x0000FFFF);
+        ExpectIntValue(SwapBytes_U64(x64), 0x00FF00FF00FF00FF);
+
+        ExpectIntValue(ReverseBits_U8(x8),   0x0F);
+        ExpectIntValue(ReverseBits_U16(x16), 0x00FF);
+        ExpectIntValue(ReverseBits_U32(x32), 0x0000FFFF);
+        ExpectIntValue(ReverseBits_U64(x64), 0x00FF00FF00FF00FF);
     }
     printf("\n");
 
@@ -471,8 +475,8 @@ static int ExecuteTests(int argc, char **argv) {
 
         ExpectTrue(M_CompareSize(a, b, 10 * sizeof(U32)));
 
-        M_Temp tempa = M_GetTemp(0, 0);
-        M_Temp tempb = M_GetTemp(1, &tempa.arena);
+        M_Temp tempa = M_AcquireTemp(0, 0);
+        M_Temp tempb = M_AcquireTemp(1, &tempa.arena);
 
         ExpectTrue(tempa.arena != tempb.arena);
 
@@ -532,7 +536,7 @@ static int ExecuteTests(int argc, char **argv) {
         ExpectIntValue(count, 3);
         ExpectIntValue(*(U32 *) value, 0x8281e3);
 
-        M_Temp temp = M_GetTemp(0, 0);
+        M_Temp temp = M_AcquireTemp(0, 0);
         Str8 cpy = Str8_Copy(temp.arena, test);
         ExpectStrValue(cpy, "Some/path/with/file.txt");
 
@@ -593,10 +597,7 @@ static int ExecuteTests(int argc, char **argv) {
 
     printf("-- Logging\n");
     {
-        Log_Context *global = Log_Get();
-
-        Log_Context *log = Log_Alloc();
-        Log_Select(log);
+        Log_PushScope();
 
         Log_Debug("Hello, %d", 69105);
         Log_Info("Other INFO");
@@ -612,30 +613,69 @@ static int ExecuteTests(int argc, char **argv) {
             ("Error failed")
         };
 
-        U32 index = 0;
+        M_Temp temp = M_AcquireTemp(0, 0);
+        Log_MessageArray messages = Log_PopScope(temp.arena);
 
-        Log_MessageList *messages = Log_GetMessages();
-        for (Log_MessageNode *n = messages->first; n != 0; n = n->next) {
-            ExpectStrValue(n->message, expected_messages[index]);
-            ExpectIntValue(n->level, index);
+        ExpectTrue(messages.count == ArraySize(expected_messages));
 
-            index += 1;
+        for (U32 it = 0; it < messages.count; ++it) {
+            Log_Message *n = &messages.items[it];
+            ExpectStrValue(n->message, expected_messages[it]);
+            ExpectIntValue(n->code, cast(S32) it - 4); // LOG_* codes are negative
         }
 
         ExpectStrValue(Log_StrFromLevel(LOG_ERROR), "Error");
 
-        Log_Clear();
+        M_ReleaseTemp(temp);
+    }
+    printf("\n");
 
-        log = Log_Get();
-        Log_Release(log);
+    printf("-- Stream\n");
+    {
+        U8 values[] = { 0, 1, 2, 3, 4 };
 
-        Log_Select(global);
+        Stream_Context zstream;
+        Stream_Zero(&zstream);
+
+        U32 *zero = Stream_Read(&zstream, U32);
+        ExpectIntValue(zero[0], 0);
+
+        Stream_Context mstream;
+
+        Str8 data;
+        data.count = ArraySize(values);
+        data.data  = values;
+
+        Stream_FromMemory(&mstream, data);
+
+        U32 it = 0;
+        while (mstream.pos != mstream.end) {
+            ExpectIntValue(mstream.pos[0], values[it]);
+            mstream.pos += 1;
+            it += 1;
+        }
+
+        U32 bit_pattern = 0xCACACACA;
+
+        data.count = sizeof(bit_pattern);
+        data.data  = cast(U8 *) &bit_pattern;
+
+        Stream_FromMemory(&mstream, data);
+
+        for (U32 it = 0; it < 32; it += 4) {
+            U32 bits = Stream_ReadBits(&mstream, 4);
+
+            ExpectIntValue(bits, ((it >> 2) & 1) ? 0xC : 0xA);
+        }
+
+        ExpectIntValue(mstream.bit_buffer, 0);
+        ExpectIntValue(mstream.bit_count,  0);
     }
     printf("\n");
 
     printf("-- File System\n");
     {
-        M_Temp temp = M_GetTemp(0, 0);
+        M_Temp temp = M_AcquireTemp(0, 0);
 
         // system paths
         //
@@ -722,24 +762,33 @@ static int ExecuteTests(int argc, char **argv) {
     {
         // this will catch any leaked temporary memory calls
         //
-        M_Temp a = M_GetTemp(0, 0);
-        M_Temp b = M_GetTemp(1, &a.arena);
+        M_Temp a = M_AcquireTemp(0, 0);
+        M_Temp b = M_AcquireTemp(1, &a.arena);
 
         ExpectIntValue(a.arena->offset, M_ARENA_MIN_OFFSET);
         ExpectIntValue(b.arena->offset, M_ARENA_MIN_OFFSET);
     }
     printf("\n");
 
-    Log_MessageList *errors = Log_GetMessages();
-    if (errors->num_messages != 0) {
-        printf("[some tests failed]\n");
+    {
+        M_Temp temp = M_AcquireTemp(0, 0);
 
-        for (Log_MessageNode *n = errors->first; n != 0; n = n->next) {
-            printf("  %.*s line %d failed: %.*s\n", Sv(n->func), n->line, Sv(n->message));
+        Log_MessageArray messages = Log_PopScope(temp.arena);
+        if (messages.count != 0) {
+            printf("[some tests failed]\n");
+
+            for (U32 it = 0; it < messages.count; ++it) {
+                Log_Message *msg = &messages.items[it];
+                if (msg->code == LOG_ERROR) {
+                    printf("  %.*s line %d failed: %.*s\n", Sv(msg->func), msg->line, Sv(msg->message));
+                }
+            }
         }
-    }
-    else {
-        printf("[all tests passed successfully]\n");
+        else {
+            printf("[all tests passed successfully]\n");
+        }
+
+        M_ReleaseTemp(temp);
     }
 
     return 0;

@@ -282,7 +282,7 @@ typedef void VoidProc(void);
 #define _Stringify(x) #x
 #define Stringify(x) _Stringify(x)
 
-#define FourCC(a, b, c, d) (((U32) (d) << 24) | ((U32) (b) << 16) | ((U32) (c) << 8) | ((U32) (a) << 0))
+#define FourCC(a, b, c, d) (((U32) (d) << 24) | ((U32) (c) << 16) | ((U32) (b) << 8) | ((U32) (a) << 0))
 
 #define Compose_U64(hi, lo) (((U64) (hi) << 32) | (lo))
 
@@ -523,6 +523,31 @@ function U64 PrevPow2_U64(U64 value);
 function U32 NearestPow2_U32(U32 value);
 function U64 NearestPow2_U64(U64 value);
 
+function U16 SwapBytes_U16(U16 x);
+function U32 SwapBytes_U32(U32 x);
+function U64 SwapBytes_U64(U64 x);
+
+// These macros are for little-endian machines, they are however macros in
+// the event a popular big endian machine comes along we can have defines
+// to override them (inverting their definitions) so code that expects to
+// read BE values to host values still work correctly.
+//
+// Mainly for reading files where integer values are setup in a specific byte
+// order (normally network = BE)
+//
+#define ReadBE_U16(x) SwapBytes_U16(x)
+#define ReadBE_U32(x) SwapBytes_U32(x)
+#define ReadBE_U64(x) SwapBytes_U64(x)
+
+#define ReadLE_U16(x) (x)
+#define ReadLE_U32(x) (x)
+#define ReadLE_U64(x) (x)
+
+function U8  ReverseBits_U8(U8 x);
+function U16 ReverseBits_U16(U16 x);
+function U32 ReverseBits_U32(U32 x);
+function U64 ReverseBits_U64(U64 x);
+
 // all return a pointer to the beginning of dst
 //
 function void *M_CopySize(void *dst, void *src, U64 size);
@@ -652,11 +677,11 @@ struct M_Temp {
 // get a thread local temporary arena, any arenas supplied in the 'conflicts' array
 // will not be re-acquired by this call
 //
-function M_Temp M_GetTemp(U32 count, M_Arena **conflicts);
-
-// release an acquired temporary arena
+// releasing a temp arena will relinquish control of the memory allocated from
+// it, signalling to the system it is no longer needed
 //
-function void M_ReleaseTemp(M_Temp temp);
+function M_Temp M_AcquireTemp(U32 count, M_Arena **conflicts);
+function void   M_ReleaseTemp(M_Temp temp);
 
 // supporting macros for push/pop default argument selection
 //
@@ -695,7 +720,6 @@ function void M_ReleaseTemp(M_Temp temp);
 #define S(x) Str8_Wrap(sizeof(x) - sizeof(*(x)), (U8 *) (x))
 #define Sz(x) Str8_WrapZ((U8 *) (x))
 #define Sl(x) { sizeof(x) - sizeof(*(x)), (U8 *) (x) }
-#define Ss(x) { sizeof(*(x)), (U8 *) (x) }
 #define Sv(x) (int) (x).count, (x).data
 #define Sf(arena, format, ...) Str8_Format((arena), (format), ##__VA_ARGS__)
 
@@ -779,57 +803,78 @@ function U8 Chr_ToLowercase(U8 c);
 // :logging
 // --------------------------------------------------------------------------------
 //
-
-typedef U32 Log_Level;
 enum {
-    LOG_DEBUG = 0,
-    LOG_INFO,
-    LOG_WARN,
-    LOG_ERROR
+    // These are negative to be expandable, users can define their own custom
+    // log codes which are >= 0 to have more control
+    //
+    // Any future built-in codes will also be negative
+    //
+    LOG_ERROR = -1,
+    LOG_WARN  = -2,
+    LOG_INFO  = -3,
+    LOG_DEBUG = -4
 };
 
-typedef struct Log_MessageNode Log_MessageNode;
-struct Log_MessageNode {
-    Log_MessageNode *next;
+typedef struct Log_Message Log_Message;
+struct Log_Message {
+    Log_Message *next;
 
-    Log_Level level;
+    // Can be anything you want, the default usage is "log level" with the above
+    // enum
+    //
+    S32 code;
 
     Str8 file;
-    U32  line;
     Str8 func;
+    U32  line;
 
     Str8 message;
 };
 
 typedef struct Log_MessageList Log_MessageList;
 struct Log_MessageList {
-    Log_MessageNode *first;
-    Log_MessageNode *last;
+    Log_Message *first;
+    Log_Message *last;
 
     U32 num_messages;
 };
 
-typedef struct Log_Context Log_Context;
-struct Log_Context {
-    M_Arena *arena;
-    U64 base_offset;
+typedef struct Log_MessageArray Log_MessageArray;
+struct Log_MessageArray {
+    Log_Message *items;
+    U32 count;
+};
 
+typedef struct Log_Scope Log_Scope;
+struct Log_Scope {
+    Log_Scope *next;
+
+    U64 offset;
     Log_MessageList messages;
 };
 
-function Str8 Log_StrFromLevel(Log_Level level);
+typedef struct Log_Context Log_Context;
+struct Log_Context {
+    M_Arena   *arena;
+    Log_Scope *scopes;
+};
 
-function Log_Context *Log_Alloc();
-function Log_Context *Log_Get(); // get current logger
-function void         Log_Clear(); // clear current logger
+function Str8 Log_StrFromLevel(S32 level);
 
-function void Log_Select(Log_Context *logger); // for the current thread
-function void Log_Release(Log_Context *logger);
+// @todo: once we have a more substantial init call for core generally this will
+// go away
+//
+function void Log_Init();
 
-function Log_MessageList *Log_GetMessages();
+// Push/pop logging scopes
+//
+// When popping an array of all of the messages that have been push onto the scope
+//
+function void Log_PushScope();
+function Log_MessageArray Log_PopScope(M_Arena *arena);
 
-function void Log_PushMessageArgs(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, va_list args);
-function void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, ...);
+function void Log_PushMessageArgs(S32 code, Str8 file, U32 line, Str8 func, const char *format, va_list args);
+function void Log_PushMessage(S32 code, Str8 file, U32 line, Str8 func, const char *format, ...);
 
 #if !defined(NDEBUG)
     #define Log_Debug(f, ...) Log_PushMessage(LOG_DEBUG, THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
@@ -840,6 +885,73 @@ function void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, c
 #define Log_Info(f, ...)  Log_PushMessage(LOG_INFO,  THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
 #define Log_Warn(f, ...)  Log_PushMessage(LOG_WARN,  THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
 #define Log_Error(f, ...) Log_PushMessage(LOG_ERROR, THIS_FILE, THIS_LINE, THIS_FUNCTION, f, ##__VA_ARGS__)
+
+//
+// --------------------------------------------------------------------------------
+// :stream
+// --------------------------------------------------------------------------------
+//
+// A very simple, expandable buffered stream interface. Working at a byte
+// granularity by default with some bit-oriented helper functions
+//
+// The bit functions can read a max of 32-bits ahead at the moment
+//
+typedef struct Stream_Context Stream_Context;
+
+typedef S32 Stream_Error;
+enum {
+    // This is made to be externally expandable, common error-codes defined
+    // here will always be increasingly negative and zero will always mean
+    // "no error".
+    //
+    // If it is desired to add custom stream errors as long as you manage
+    // conflicts between your subsystems and they are > 0 you will never
+    // conflict with the common error-codes
+    //
+    STREAM_ERROR_READ_PAST_END = -1,
+    STREAM_ERROR_NONE = 0,
+};
+
+#define STREAM_REFILL(name) Stream_Error name(Stream_Context *stream)
+typedef STREAM_REFILL(Stream_Refill);
+
+struct Stream_Context {
+    U8 *start;
+    U8 *end;
+
+    U8 *pos;
+
+    U32 bit_buffer;
+    U32 bit_count;
+
+    Stream_Refill *RefillFunc;
+
+    Stream_Error error;
+};
+
+// Utility macros
+//
+#define Stream_Total(s)     (S64) ((s)->end - (s)->start)
+#define Stream_Remaining(s) (S64) ((s)->end - (s)->pos)
+#define Stream_Read(s, T) (T *) (s)->pos; (s)->pos += sizeof(T)
+
+// Construction
+//
+function void Stream_Zero(Stream_Context *stream); // virtual zero stream
+function void Stream_FromMemory(Stream_Context *stream, Str8 memory);
+
+function Stream_Error Stream_Fail(Stream_Context *stream, Stream_Error err);
+
+// Bit functions
+//
+function void Stream_RefillBits(Stream_Context *stream);
+function void Stream_ConsumeBits(Stream_Context *stream, U64 count);
+
+function U64 Stream_PeekBits(Stream_Context *stream, U64 count);
+
+// This will peek and then consume 'count' bits in one go
+//
+function U64 Stream_ReadBits(Stream_Context *stream, U64 count);
 
 //
 // --------------------------------------------------------------------------------
@@ -1328,6 +1440,86 @@ U64 NearestPow2_U64(U64 value) {
     return result;
 }
 
+// These are correctly detected as bswap/rev instructions under all
+// major compilers with optimisations turned on.... at least on an
+// up to date version
+//
+
+U16 SwapBytes_U16(U16 x) {
+    U16 result = (x >> 8) | (x << 8);
+    return result;
+}
+
+U32 SwapBytes_U32(U32 x) {
+    U32 result =
+        (x & 0xFF000000) >> 24 |
+        (x & 0x00FF0000) >>  8 |
+        (x & 0x0000FF00) <<  8 |
+        (x & 0x000000FF) << 24;
+
+    return result;
+}
+
+U64 SwapBytes_U64(U64 x) {
+    U64 result =
+        ((x & 0xFF00000000000000) >> 56) |
+        ((x & 0x00FF000000000000) >> 40) |
+        ((x & 0x0000FF0000000000) >> 24) |
+        ((x & 0x000000FF00000000) >>  8) |
+        ((x & 0x00000000FF000000) <<  8) |
+        ((x & 0x0000000000FF0000) << 24) |
+        ((x & 0x000000000000FF00) << 40) |
+        ((x & 0x00000000000000FF) << 56);
+
+    return result;
+}
+
+U8 ReverseBits_U8(U8 x) {
+    U8 result = x;
+
+    result = ((result & 0xAA) >> 1) | ((result & 0x55) << 1);
+    result = ((result & 0xCC) >> 2) | ((result & 0x33) << 2);
+    result = ((result & 0xF0) >> 4) | ((result & 0x0F) << 4);
+
+    return result;
+}
+
+U16 ReverseBits_U16(U16 x) {
+    U16 result = x;
+
+    result = ((result & 0xAAAA) >> 1) | ((result & 0x5555) << 1);
+    result = ((result & 0xCCCC) >> 2) | ((result & 0x3333) << 2);
+    result = ((result & 0xF0F0) >> 4) | ((result & 0x0F0F) << 4);
+    result = ((result & 0xFF00) >> 8) | ((result & 0x00FF) << 8);
+
+    return result;
+}
+
+U32 ReverseBits_U32(U32 x) {
+    U32 result = x;
+
+    result = ((result & 0xAAAAAAAA) >>  1) | ((result & 0x55555555) <<  1);
+    result = ((result & 0xCCCCCCCC) >>  2) | ((result & 0x33333333) <<  2);
+    result = ((result & 0xF0F0F0F0) >>  4) | ((result & 0x0F0F0F0F) <<  4);
+    result = ((result & 0xFF00FF00) >>  8) | ((result & 0x00FF00FF) <<  8);
+    result = ((result & 0xFFFF0000) >> 16) | ((result & 0x0000FFFF) << 16);
+
+    return result;
+}
+
+U64 ReverseBits_U64(U64 x) {
+    U64 result = x;
+
+    result = ((result & 0xAAAAAAAAAAAAAAAA) >>  1) | ((result & 0x5555555555555555) <<  1);
+    result = ((result & 0xCCCCCCCCCCCCCCCC) >>  2) | ((result & 0x3333333333333333) <<  2);
+    result = ((result & 0xF0F0F0F0F0F0F0F0) >>  4) | ((result & 0x0F0F0F0F0F0F0F0F) <<  4);
+    result = ((result & 0xFF00FF00FF00FF00) >>  8) | ((result & 0x00FF00FF00FF00FF) <<  8);
+    result = ((result & 0xFFFF0000FFFF0000) >> 16) | ((result & 0x0000FFFF0000FFFF) << 16);
+    result = ((result & 0xFFFFFFFF00000000) >> 32) | ((result & 0x00000000FFFFFFFF) << 32);
+
+    return result;
+}
+
 void *M_CopySize(void *dst, void *src, U64 size) {
     void *result = dst;
 
@@ -1387,7 +1579,7 @@ internal void _MergeSortMerge(U8 *array, CompareFunc *Compare, U64 element_size,
     S64 lcount = middle - start + 1;
     S64 rcount = end - middle;
 
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
 
     U8 *lstart = array + ((start)      * element_size);
     U8 *rstart = array + ((middle + 1) * element_size);
@@ -1446,7 +1638,7 @@ void _MergeSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) 
 internal S64 _QuickSortPartition(U8 *array, CompareFunc *Compare, U64 element_size, S64 lo, S64 hi) {
     S64 result = lo;
 
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
 
     U8 *pivot = array + (hi * element_size);
 
@@ -1875,7 +2067,7 @@ void M_ArenaPopLast(M_Arena *arena) {
 
 thread_static M_Arena *__tls_temp[M_TEMP_ARENA_COUNT];
 
-M_Temp M_GetTemp(U32 count, M_Arena **conflicts) {
+M_Temp M_AcquireTemp(U32 count, M_Arena **conflicts) {
     M_Temp result;
 
     result.arena  = 0;
@@ -2360,18 +2552,145 @@ U8 Chr_ToLowercase(U8 c) {
 
 //
 // --------------------------------------------------------------------------------
+// :impl_stream
+// --------------------------------------------------------------------------------
+//
+
+internal STREAM_REFILL(Stream_RefillZeros) {
+    Stream_Error result = stream->error;
+
+    local_persist U8 zeros[64];
+
+    stream->start = zeros;
+    stream->end   = zeros + sizeof(zeros);
+    stream->pos   = zeros;
+
+    return result;
+}
+
+internal STREAM_REFILL(Stream_RefillMemory) {
+    Stream_Error result = Stream_Fail(stream, STREAM_ERROR_READ_PAST_END);
+    return result;
+}
+
+void Stream_Zero(Stream_Context *stream) {
+    stream->bit_buffer = 0;
+    stream->bit_count  = 0;
+
+    stream->error = STREAM_ERROR_NONE;
+
+    stream->RefillFunc = Stream_RefillZeros;
+    stream->RefillFunc(stream);
+}
+
+void Stream_FromMemory(Stream_Context *stream, Str8 memory) {
+    stream->bit_buffer = 0;
+    stream->bit_count  = 0;
+
+    stream->error = STREAM_ERROR_NONE;
+
+    stream->start = memory.data;
+    stream->end   = memory.data + memory.count;
+    stream->pos   = memory.data;
+
+    stream->RefillFunc = Stream_RefillMemory;
+}
+
+Stream_Error Stream_Fail(Stream_Context *stream, Stream_Error err) {
+    Stream_Error result;
+
+    stream->error      = err;
+    stream->RefillFunc = Stream_RefillZeros;
+
+    result = stream->RefillFunc(stream);
+    return result;
+}
+
+// Bit functions
+//
+void Stream_RefillBits(Stream_Context *stream) {
+    // @todo: think about how to handle this if we need more than 32-bits
+    // in our bit buffer.
+    //
+    // If we have a larger amount it may cause over-reads where the codec
+    // has specifically put mechanisms in place to prevent them. This could
+    // potentially cause a refill call when it was unexpected by client code
+    // and will desync the entire bitstream
+    //
+    // for example in PNG during the DEFLATE stage a BTYPE of 0 will first
+    // align the bitstream to a byte boundary and then read two 16 bit
+    // values, as 32-bits is the maximum it will read this guarantees the
+    // bit buffer/count will be zero after. Thus when copying literals directly
+    // (which updates the streams 'pos') there is no worry about having to
+    // flush the bit buffer or over-reading.
+    //
+    // One option could be to fill the bit buffer without actually consuming bytes
+    // and only update the "pos" pointer when consuming bits instead. However,
+    // this has the issue of having to do a "dummy" refill to lookahead if
+    // we reach the end of the stream section
+    //
+    // We could just require the max number of bits to be provided to the
+    // this refill bits call
+    //
+
+    for (; stream->bit_count <= 24; stream->bit_count += 8) {
+        if (stream->pos == stream->end) {
+            // We have run out of bytes to put into the bit buffer so
+            // attempt to refill, if on failure it will produce the virtual
+            // zero stream and pad the extra bytes to zero
+            //
+            stream->RefillFunc(stream);
+        }
+
+        stream->bit_buffer |= (*stream->pos++ << stream->bit_count);
+    }
+}
+
+void Stream_ConsumeBits(Stream_Context *stream, U64 count) {
+    Assert(stream->bit_count >= count);
+
+    stream->bit_buffer >>= count;
+    stream->bit_count   -= count;
+}
+
+U64 Stream_PeekBits(Stream_Context *stream, U64 count) {
+    Assert(count < 32);
+
+    if (stream->bit_count < count) {
+        // Not enough bit, refill!
+        //
+        Stream_RefillBits(stream);
+    }
+
+    // this works with zero count
+    //
+    U64 result = stream->bit_buffer & ((1ULL << count) - 1);
+    return result;
+}
+
+// This will peek and then consume 'count' bits in one go
+//
+U64 Stream_ReadBits(Stream_Context *stream, U64 count) {
+    U64 result = Stream_PeekBits(stream, count);
+
+    Stream_ConsumeBits(stream, count);
+    return result;
+}
+
+//
+// --------------------------------------------------------------------------------
 // :impl_logging
 // --------------------------------------------------------------------------------
 //
 
 #if !defined(LOG_CONTEXT_ARENA_SIZE)
-    #define LOG_CONTEXT_ARENA_SIZE MB(8)
+    #define LOG_CONTEXT_ARENA_SIZE MB(64)
 #endif
 
 thread_static Log_Context *__thread_logger;
 
-Str8 Log_StrFromLevel(Log_Level level) {
-    Str8 result = S("Unknown");
+Str8 Log_StrFromLevel(S32 level) {
+    Str8 result = S("Custom");
 
     switch (level) {
         case LOG_DEBUG: { result = S("Debug");   } break;
@@ -2384,78 +2703,104 @@ Str8 Log_StrFromLevel(Log_Level level) {
     return result;
 }
 
-Log_Context *Log_Alloc() {
-    M_Arena     *arena  = M_AllocArena(LOG_CONTEXT_ARENA_SIZE);
-    Log_Context *result = M_ArenaPush(arena, Log_Context);
+void Log_Init() {
+    if (__thread_logger == 0) {
+        M_Arena *arena  = M_AllocArena(LOG_CONTEXT_ARENA_SIZE);
 
-    result->arena       = arena;
-    result->base_offset = M_GetArenaOffset(arena);
+        __thread_logger = M_ArenaPush(arena, Log_Context);
+        __thread_logger->arena = arena;
 
-    return result;
-}
-
-Log_Context *Log_Get() {
-    Log_Context *result = __thread_logger;
-    return result;
-}
-
-void Log_Release(Log_Context *logger) {
-    if (__thread_logger == logger) { __thread_logger = 0; }
-
-    M_Arena *arena = logger->arena;
-    M_ReleaseArena(arena);
-}
-
-void Log_Clear() {
-    Log_Context *logger = __thread_logger;
-
-    if (logger) {
-        M_ArenaPopTo(logger->arena, logger->base_offset);
-
-        logger->messages.first        = 0;
-        logger->messages.last         = 0;
-        logger->messages.num_messages = 0;
-    }
-}
-
-void Log_Select(Log_Context *logger) {
-    __thread_logger = logger;
-}
-
-Log_MessageList *Log_GetMessages() {
-    Log_MessageList *result = 0;
-
-    if (__thread_logger) { result = &__thread_logger->messages; }
-    return result;
-}
-
-void Log_PushMessageArgs(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, va_list args) {
-    if (__thread_logger) {
-        Log_MessageNode *node = M_ArenaPush(__thread_logger->arena, Log_MessageNode);
-
-        // @todo: we probably don't have to copy the file/func each time because they are likely coming
-        // from the statically defined macro varaibles
+        // Push a default scope for logging messages to
         //
-        node->level = level;
-        node->file  = Str8_Copy(__thread_logger->arena, file);
-        node->line  = line;
-        node->func  = Str8_Copy(__thread_logger->arena, func);
-
-        node->message = Str8_FormatArgs(__thread_logger->arena, format, args);
-
-        Log_MessageList *messages = &__thread_logger->messages;
-
-        SLL_Enqueue(messages->first, messages->last, node);
-
-        messages->num_messages += 1;
+        Log_PushScope();
     }
 }
 
-void Log_PushMessage(Log_Level level, Str8 file, U32 line, Str8 func, const char *format, ...) {
+void Log_PushScope() {
+    U64 offset = M_GetArenaOffset(__thread_logger->arena);
+
+    Log_Scope *scope = M_ArenaPush(__thread_logger->arena, Log_Scope);
+    scope->offset    = offset;
+
+    SLL_Push(__thread_logger->scopes, scope);
+}
+
+Log_MessageArray Log_PopScope(M_Arena *arena) {
+    Log_MessageArray result = { 0 };
+
+    Log_Scope *scope = __thread_logger->scopes;
+    Log_MessageList *messages = &scope->messages;
+
+    // Copy all of the messages into the result array, then
+    // remove pop the logger arena position back to the offset
+    //
+    if (messages->num_messages != 0) {
+        result.count = messages->num_messages;
+        result.items = M_ArenaPush(arena, Log_Message, result.count);
+
+        Log_Message *src = messages->first;
+        for (U32 it = 0; it < result.count; ++it) {
+            Log_Message *dst = &result.items[it];
+
+            dst->next = dst + 1;
+
+            dst->code = src->code;
+
+            dst->file = Str8_Copy(arena, src->file);
+            dst->func = Str8_Copy(arena, src->func);
+            dst->line = src->line;
+
+            dst->message = Str8_Copy(arena, src->message);
+
+            src = src->next;
+        }
+
+        result.items[result.count - 1].next = 0;
+    }
+
+    __thread_logger->scopes = scope->next;
+    M_ArenaPopTo(__thread_logger->arena, scope->offset);
+
+    if (__thread_logger->scopes == 0) {
+        // If all scopes have been popped, push a default scope
+        // so there is always one valid
+        //
+        Log_PushScope();
+    }
+
+    return result;
+}
+
+void Log_PushMessageArgs(S32 code, Str8 file, U32 line, Str8 func, const char *format, va_list args) {
+    Assert(__thread_logger != 0);
+
+    Log_Message *node = M_ArenaPush(__thread_logger->arena, Log_Message);
+
+    // @todo: we probably don't have to copy the file/func each time
+    // because they are likely coming from the statically defined macro
+    // varaibles
+    //
+    node->code = code;
+
+    node->file = Str8_Copy(__thread_logger->arena, file);
+    node->func = Str8_Copy(__thread_logger->arena, func);
+    node->line = line;
+
+    node->message = Str8_FormatArgs(__thread_logger->arena, format, args);
+
+    // Pull the top scope and push the message onto its list
+    //
+    Log_MessageList *messages = &__thread_logger->scopes->messages;
+
+    SLL_Enqueue(messages->first, messages->last, node);
+    messages->num_messages += 1;
+}
+
+void Log_PushMessage(S32 code, Str8 file, U32 line, Str8 func, const char *format, ...) {
     va_list args;
     va_start(args, format);
 
-    Log_PushMessageArgs(level, file, line, func, format, args);
+    Log_PushMessageArgs(code, file, line, func, format, args);
 
     va_end(args);
 }
@@ -2491,7 +2836,7 @@ internal Str8 Win32_Str8FromWide(M_Arena *arena, WCHAR *str) {
 }
 
 internal void Win32_ListPathRecurse(M_Arena *arena, FS_List *list, Str8 path, FS_ListFlags flags) {
-    M_Temp temp  = M_GetTemp(1, &arena);
+    M_Temp temp  = M_AcquireTemp(1, &arena);
 
     // we have to append the wildcard to search
     //
@@ -2587,7 +2932,7 @@ OS_Handle FS_OpenFile(Str8 path, FS_Access access) {
 
     // resolve relative path and convert to UTF-16
     //
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     HANDLE hFile = CreateFileW(wpath, dwAccess, FILE_SHARE_READ, 0, dwCreation, FILE_ATTRIBUTE_NORMAL, 0);
@@ -2614,7 +2959,7 @@ void FS_CloseFile(OS_Handle file) {
 B32 FS_RemoveFile(Str8 path) {
     B32 result;
 
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     result = DeleteFileW(wpath);
@@ -2737,7 +3082,7 @@ FS_Properties FS_PropertiesFromHandle(OS_Handle file) {
         if (GetFileInformationByHandle(hFile, &info)) {
             DWORD attrs = info.dwFileAttributes;
 
-            M_Temp temp   = M_GetTemp(0, 0);
+            M_Temp temp   = M_AcquireTemp(0, 0);
             Str8 path     = FS_PathFromHandle(temp.arena, file);
             Str8 basename = Str8_GetBasename(path);
 
@@ -2786,7 +3131,7 @@ Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
 
     if (OS_HandleValid(file)) {
         HANDLE hFile = cast(HANDLE) file.v[0];
-        M_Temp temp  = M_GetTemp(1, &arena);
+        M_Temp temp  = M_AcquireTemp(1, &arena);
 
         // Push a 1KiB buffer as an initial guess, if that is too small the
         // FILE_NAME_INFO will contain how long we need to make the buffer so pop
@@ -2855,7 +3200,7 @@ U64 FS_SizeFromHandle(OS_Handle file) {
 FS_Properties FS_PropertiesFromPath(Str8 path) {
     FS_Properties result = 0;
 
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     DWORD attrs = GetFileAttributesW(wpath);
@@ -2875,7 +3220,7 @@ FS_Properties FS_PropertiesFromPath(Str8 path) {
 FS_Time FS_TimeFromPath(Str8 path) {
     FS_Time result = { 0 };
 
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     WIN32_FILE_ATTRIBUTE_DATA attrs;
@@ -2900,7 +3245,7 @@ FS_Time FS_TimeFromPath(Str8 path) {
 U64 FS_SizeFromPath(Str8 path) {
     U64 result = 0;
 
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     WIN32_FILE_ATTRIBUTE_DATA attrs;
@@ -2919,7 +3264,7 @@ U64 FS_SizeFromPath(Str8 path) {
 B32 FS_CreateDirectory(Str8 path) {
     B32 result = true;
 
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     U64 it = 0;
@@ -2977,7 +3322,7 @@ B32 FS_CreateDirectory(Str8 path) {
 B32 FS_RemoveDirectory(Str8 path) {
     B32 result;
 
-    M_Temp temp  = M_GetTemp(0, 0);
+    M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
 
     result = RemoveDirectoryW(wpath);
@@ -3006,7 +3351,7 @@ Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
     // of this stuff and then just copy it directly rather than having to do the work every time
     //
 
-    M_Temp temp = M_GetTemp(1, &arena);
+    M_Temp temp = M_AcquireTemp(1, &arena);
 
     switch (type) {
         case FS_PATH_EXE: {
@@ -3141,7 +3486,7 @@ struct linux_dirent64 {
 };
 
 internal void Linux_ListPathRecursive(M_Arena *arena, FS_List *list, Str8 path, FS_ListFlags flags) {
-    M_Temp temp = M_GetTemp(1, &arena);
+    M_Temp temp = M_AcquireTemp(1, &arena);
     Str8 zpath  = Str8_Copy(temp.arena, path);
 
     B32 recurse        = (flags & FS_LIST_RECURSIVE)      != 0;
@@ -3231,7 +3576,7 @@ OS_Handle FS_OpenFile(Str8 path, FS_Access access) {
     OS_Handle result = OS_NilHandle();
 
     if (access) {
-        M_Temp temp = M_GetTemp(0, 0);
+        M_Temp temp = M_AcquireTemp(0, 0);
         Str8 zpath  = Str8_Copy(temp.arena, path);
 
         int flags = O_RDONLY;
@@ -3263,7 +3608,7 @@ void FS_CloseFile(OS_Handle file) {
 }
 
 B32 FS_RemoveFile(Str8 path) {
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
     Str8 zpath  = Str8_Copy(temp.arena, path);
 
     B32 result = unlink((const char *) zpath.data) == 0;
@@ -3276,9 +3621,9 @@ S64 FS_ReadFile(OS_Handle file, Str8 data, U64 offset) {
     S64 result = 0;
 
     if (OS_HandleValid(file)) {
-        int    fd        = cast(int) file.v[0];
-        U8    *ptr       = data.data;
-        size_t remaining = data.count;
+        int    fd         = cast(int) file.v[0];
+        U8    *ptr        = data.data;
+        ssize_t remaining = data.count;
 
         while (remaining > 0) {
             ssize_t nread = pread(fd, ptr, remaining, offset);
@@ -3308,9 +3653,9 @@ S64 FS_WriteFile(OS_Handle file, Str8 data, U64 offset) {
     S64 result = 0;
 
     if (OS_HandleValid(file)) {
-        int    fd        = cast(int) file.v[0];
-        U8    *ptr       = data.data;
-        size_t remaining = data.count;
+        int     fd        = cast(int) file.v[0];
+        U8     *ptr       = data.data;
+        ssize_t remaining = data.count;
 
         while (remaining > 0) {
             ssize_t nwritten = pwrite(fd, ptr, remaining, offset);
@@ -3366,7 +3711,7 @@ FS_Properties FS_PropertiesFromHandle(OS_Handle file) {
 
         struct stat stbuf;
         if (fstat(fd, &stbuf) == 0) {
-            M_Temp temp = M_GetTemp(0, 0);
+            M_Temp temp = M_AcquireTemp(0, 0);
             Str8 path   = FS_PathFromHandle(temp.arena, file);
 
             B32 is_dir    = ((stbuf.st_mode & S_IFMT) == S_IFDIR);
@@ -3415,7 +3760,7 @@ Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
     Str8 result = { 0 };
 
     if (OS_HandleValid(file)) {
-        M_Temp temp = M_GetTemp(1, &arena);
+        M_Temp temp = M_AcquireTemp(1, &arena);
 
         int  fd      = cast(int) file.v[0];
         Str8 fd_path = Sf(temp.arena, "/proc/self/fd/%d", fd);
@@ -3475,7 +3820,7 @@ U64 FS_SizeFromHandle(OS_Handle file) {
 FS_Properties FS_PropertiesFromPath(Str8 path) {
     FS_Properties result = 0;
 
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
     Str8 zpath  = Str8_Copy(temp.arena, path);
 
     struct stat stbuf;
@@ -3498,7 +3843,7 @@ FS_Properties FS_PropertiesFromPath(Str8 path) {
 FS_Time FS_TimeFromPath(Str8 path) {
     FS_Time result = { 0 };
 
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
     Str8 zpath  = Str8_Copy(temp.arena, path);
 
     struct stat stbuf;
@@ -3519,7 +3864,7 @@ FS_Time FS_TimeFromPath(Str8 path) {
 U64 FS_SizeFromPath(Str8 path) {
     U64 result = 0;
 
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
     Str8 zpath  = Str8_Copy(temp.arena, path);
 
     struct stat stbuf;
@@ -3538,7 +3883,7 @@ U64 FS_SizeFromPath(Str8 path) {
 B32 FS_CreateDirectory(Str8 path) {
     B32 result = true;
 
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
     Str8 cpy    = Str8_Copy(temp.arena, path);
 
     char *zpath = cast(char *) cpy.data;
@@ -3583,7 +3928,7 @@ B32 FS_CreateDirectory(Str8 path) {
 }
 
 B32 FS_RemoveDirectory(Str8 path) {
-    M_Temp temp = M_GetTemp(0, 0);
+    M_Temp temp = M_AcquireTemp(0, 0);
     Str8 zpath  = Str8_Copy(temp.arena, path);
 
     B32 result = rmdir((const char *) zpath.data) == 0;
@@ -3596,7 +3941,7 @@ B32 FS_RemoveDirectory(Str8 path) {
 Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
     Str8 result = { 0 };
 
-    M_Temp temp = M_GetTemp(1, &arena);
+    M_Temp temp = M_AcquireTemp(1, &arena);
 
     switch (type) {
         case FS_PATH_EXE: {
