@@ -1,5 +1,7 @@
 // for coverage in formatting
 // #define STR8_INITIAL_FORMAT_GUESS_SIZE 16
+//
+// @todo: build a better test system, this is kinda bad
 
 #define CORE_MODULE
 #include "core.h"
