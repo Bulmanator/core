@@ -306,8 +306,8 @@ internal B32 __ZLIB_ConstructHuffman(__ZLIB_Huffman *huffman, U8 *lengths, U32 c
     for (U32 it = 0; it < count; ++it) {
         U32 len = lengths[it];
         if (len != 0) {
-            U16 code  = next_code[len]++;
-            U16 index = huffman->base[len] + code;
+            U16 vcode = next_code[len]++;
+            U16 index = huffman->base[len] + vcode;
 
             Assert(index < __PNG_NUM_SYMBOLS); // we control this, thus assert
 
@@ -319,8 +319,8 @@ internal B32 __ZLIB_ConstructHuffman(__ZLIB_Huffman *huffman, U8 *lengths, U32 c
                 // We have to reverse the bits first because huffman codes
                 // are stored most-significant-bit first in the stream
                 //
-                U16 luti = ReverseBits_U16(code) >> (__PNG_MAX_BITS - len);
-                U16 lutv = (len << __ZLIB_LUT_BITS) | it;
+                U16 luti = ReverseBits_U16(vcode) >> (__PNG_MAX_BITS - len);
+                U16 lutv = cast(U16) ((len << __ZLIB_LUT_BITS) | it);
 
                 while (luti < (1 << __ZLIB_LUT_BITS)) {
                     huffman->lut[luti] = lutv;
@@ -468,13 +468,13 @@ internal B32 __ZLIB_Decompress(__PNG_Decoder *decoder, Str8 zbuffer) {
 
                     stream->pos += to_copy;
                     zpos        += to_copy;
-                    len         -= to_copy;
+                    len         -= cast(U32) to_copy;
                 }
             }
         }
         else if (btype <= 0x2) {
-            __ZLIB_Huffman hlit  = { 0 };
-            __ZLIB_Huffman hdist = { 0 };
+            __ZLIB_Huffman hlit  = {{ 0 }};
+            __ZLIB_Huffman hdist = {{ 0 }};
 
             if (btype == 0x1) {
                 // BTYPE == 0x1 : Fixed Huffman encoded block
@@ -530,10 +530,10 @@ internal B32 __ZLIB_Decompress(__PNG_Decoder *decoder, Str8 zbuffer) {
                 // Construct HCLEN Huffman tree
                 //
                 for (U32 it = 0; it < hclen_count; ++it) {
-                    hclen_lengths[hclen_swizzle[it]] = Stream_ReadBits(stream, 3);
+                    hclen_lengths[hclen_swizzle[it]] = cast(U8) Stream_ReadBits(stream, 3);
                 }
 
-                __ZLIB_Huffman hclen = { 0 };
+                __ZLIB_Huffman hclen = {{ 0 }};
                 if (!__ZLIB_ConstructHuffman(&hclen, hclen_lengths, 19)) {
                     __PNG_Error(decoder, "Failed to construct dynamic HCLEN Huffman tree");
                     break;
@@ -549,7 +549,7 @@ internal B32 __ZLIB_Decompress(__PNG_Decoder *decoder, Str8 zbuffer) {
                     if (v <= 15) {
                         // Copy literal once
                         //
-                        literal = v;
+                        literal = cast(U8) v;
                     }
                     else if (v == 16) {
                         // Copy previous code 3-6 times
@@ -624,7 +624,7 @@ internal B32 __ZLIB_Decompress(__PNG_Decoder *decoder, Str8 zbuffer) {
                 else if (v < 256) {
                     // Literal copy
                     //
-                    *zpos++ = v;
+                    *zpos++ = cast(U8) v;
                 }
                 else if (v >= 286) {
                     __PNG_Error(decoder, "Invalid literal/length in DEFLATE stream: %d", v);

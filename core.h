@@ -945,13 +945,13 @@ function Stream_Error Stream_Fail(Stream_Context *stream, Stream_Error err);
 // Bit functions
 //
 function void Stream_RefillBits(Stream_Context *stream);
-function void Stream_ConsumeBits(Stream_Context *stream, U64 count);
+function void Stream_ConsumeBits(Stream_Context *stream, U32 count);
 
-function U64 Stream_PeekBits(Stream_Context *stream, U64 count);
+function U32 Stream_PeekBits(Stream_Context *stream, U32 count);
 
 // This will peek and then consume 'count' bits in one go
 //
-function U64 Stream_ReadBits(Stream_Context *stream, U64 count);
+function U32 Stream_ReadBits(Stream_Context *stream, U32 count);
 
 //
 // --------------------------------------------------------------------------------
@@ -2646,14 +2646,14 @@ void Stream_RefillBits(Stream_Context *stream) {
     }
 }
 
-void Stream_ConsumeBits(Stream_Context *stream, U64 count) {
+void Stream_ConsumeBits(Stream_Context *stream, U32 count) {
     Assert(stream->bit_count >= count);
 
     stream->bit_buffer >>= count;
     stream->bit_count   -= count;
 }
 
-U64 Stream_PeekBits(Stream_Context *stream, U64 count) {
+U32 Stream_PeekBits(Stream_Context *stream, U32 count) {
     Assert(count < 32);
 
     if (stream->bit_count < count) {
@@ -2664,14 +2664,14 @@ U64 Stream_PeekBits(Stream_Context *stream, U64 count) {
 
     // this works with zero count
     //
-    U64 result = stream->bit_buffer & ((1ULL << count) - 1);
+    U32 result = stream->bit_buffer & ((1ULL << count) - 1);
     return result;
 }
 
 // This will peek and then consume 'count' bits in one go
 //
-U64 Stream_ReadBits(Stream_Context *stream, U64 count) {
-    U64 result = Stream_PeekBits(stream, count);
+U32 Stream_ReadBits(Stream_Context *stream, U32 count) {
+    U32 result = Stream_PeekBits(stream, count);
 
     Stream_ConsumeBits(stream, count);
     return result;

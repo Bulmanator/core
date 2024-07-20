@@ -650,11 +650,11 @@ static int ExecuteTests(int argc, char **argv) {
 
         Stream_FromMemory(&mstream, data);
 
-        U32 it = 0;
+        U32 x = 0;
         while (mstream.pos != mstream.end) {
-            ExpectIntValue(mstream.pos[0], values[it]);
+            ExpectIntValue(mstream.pos[0], values[x]);
             mstream.pos += 1;
-            it += 1;
+            x += 1;
         }
 
         U32 bit_pattern = 0xCACACACA;
@@ -665,9 +665,9 @@ static int ExecuteTests(int argc, char **argv) {
         Stream_FromMemory(&mstream, data);
 
         for (U32 it = 0; it < 32; it += 4) {
-            U32 bits = Stream_ReadBits(&mstream, 4);
+            U64 bits = Stream_ReadBits(&mstream, 4);
 
-            ExpectIntValue(bits, ((it >> 2) & 1) ? 0xC : 0xA);
+            ExpectIntValue(bits, (U32) (((it >> 2) & 1) ? 0xC : 0xA));
         }
 
         ExpectIntValue(mstream.bit_buffer, 0);
