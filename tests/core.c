@@ -46,13 +46,23 @@ internal COMPARE_FUNC(CompareListNode) {
     return (node_a->value - node_b->value);
 }
 
-static int ExecuteTests(int argc, char **argv) {
+global_var U32 thread_sum = 0; // don't do this, but only one extra thread
+
+internal T_THREAD_PROC(TestThreadProc) {
+    (void) param;
+
+    for (U32 it = 0; it < 10; ++it) {
+        thread_sum += it;
+    }
+}
+
+internal int ExecuteTests(int argc, char **argv) {
     // ... do nothing for now
     //
     (void) argc;
     (void) argv;
 
-    Log_Init();
+    OS_Init();
 
     // Basic platform macros
     //
@@ -532,7 +542,7 @@ static int ExecuteTests(int argc, char **argv) {
         ExpectIntValue(c.count, 3);
         ExpectIntValue(c.value, 0x3042);
 
-        U8 value[4] = { 0 };
+        U8 value[4];
         U32 count = UTF8_Encode(value, c.value);
 
         ExpectIntValue(count, 3);
@@ -759,6 +769,36 @@ static int ExecuteTests(int argc, char **argv) {
         M_ReleaseTemp(temp);
     }
     printf("\n");
+
+    printf("-- Threading\n");
+    {
+        // This is not robust, just making sure basic stuff works. We can implement
+        // something more substantial later
+        //
+
+        T_Thread thread = ZERO(T_Thread);
+        thread.Proc  = TestThreadProc;
+        thread.param = 0;
+        thread.flags = 0;
+
+        OS_Handle mutex   = T_CreateMutex();
+        OS_Handle sem     = T_CreateSemaphore(10);
+        OS_Handle rwlock  = T_CreateRWLock();
+        OS_Handle condvar = T_CreateConditionVar();
+
+        T_CreateThread(&thread);
+        ExpectTrue(OS_HandleValid(thread.handle));
+
+        T_JoinThread(thread.handle);
+        T_DetachThread(thread.handle);
+
+        ExpectIntValue(thread_sum, 45);
+
+        T_DeleteMutex(mutex);
+        T_DeleteSemaphore(sem);
+        T_DeleteRWLock(rwlock);
+        T_DeleteConditionVar(condvar);
+    }
 
     printf("-- Leak\n");
     {

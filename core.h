@@ -20,12 +20,14 @@ extern "C" {
 //
 //     - :core_types | core types used throughout
 //     - :macros     | utility macros and helpers
+//     - :os_init    | operating system initialisation and handle utilities
 //     - :intrinsics | cpu or compiler level builtins
 //     - :utilities  | some basic utility functions
 //     - :arena      | memory arena implementation
 //     - :strings    | counted string helpers
 //     - :logging    | logging interface
 //     - :filesystem | filesystem + file io interface
+//     - :threading  | operating system threading primitives
 //
 // This header can be included in one of three ways:
 //
@@ -263,8 +265,15 @@ typedef void VoidProc(void);
 
 #if LANG_CPP
     #define AlignOf(x) alignof(x)
+    #define ZERO(T) {}
 #else
     #define AlignOf(x) _Alignof(x)
+
+    #if COMPILER_MSVC
+        #define ZERO(T) { 0 }
+    #elif (COMPILER_CLANG || COMPILER_GCC)
+        #define ZERO(T) {}
+    #endif
 #endif
 
 #define Min(a, b) ((a) < (b) ? (a) : (b))
@@ -444,6 +453,23 @@ typedef void VoidProc(void);
 
 //
 // --------------------------------------------------------------------------------
+// :os_init
+// --------------------------------------------------------------------------------
+//
+// This must be called before using any other part of the library, does any required
+// intialisation of the underlying operating system
+//
+function void OS_Init();
+
+// os handle utilities
+//
+function OS_Handle OS_NilHandle();
+
+function B32 OS_HandleEqual(OS_Handle a, OS_Handle b);
+function B32 OS_HandleValid(OS_Handle a); // only vaild if != OS_NilHandle()
+
+//
+// --------------------------------------------------------------------------------
 // :intrinsics
 // --------------------------------------------------------------------------------
 //
@@ -490,13 +516,6 @@ function B32 AtomicCompareExchange_Ptr(void *volatile *value, void *exchange, vo
 // :utilities
 // --------------------------------------------------------------------------------
 //
-
-// os handle utilities
-//
-function OS_Handle OS_NilHandle();
-
-function B32 OS_HandleEqual(OS_Handle a, OS_Handle b);
-function B32 OS_HandleValid(OS_Handle a); // only vaild if != OS_NilHandle()
 
 // number utilities
 //
@@ -861,11 +880,6 @@ struct Log_Context {
 
 function Str8 Log_StrFromLevel(S32 level);
 
-// @todo: once we have a more substantial init call for core generally this will
-// go away
-//
-function void Log_Init();
-
 // Push/pop logging scopes
 //
 // When popping an array of all of the messages that have been push onto the scope
@@ -1040,10 +1054,103 @@ enum {
     FS_PATH_EXE,
     FS_PATH_USER,
     FS_PATH_TEMP,
-    FS_PATH_WORKING
+    FS_PATH_WORKING,
+
+    FS_PATH_COUNT
 };
 
 function Str8 FS_GetPath(M_Arena *arena, FS_PathType type);
+
+//
+// --------------------------------------------------------------------------------
+// :threading
+// --------------------------------------------------------------------------------
+//
+#define T_THREAD_PROC(name) void name(void *param)
+typedef T_THREAD_PROC(T_ThreadProc);
+
+typedef U32 T_ThreadFlags;
+enum {
+    // Create the thread in a suspended state, the thread can then be resumed by
+    // calling T_ResumeThread with the returned handle.
+    //
+    // This flag is ignored if T_THREAD_CREATE_DETACHED is also provided as there would
+    // be no way to start the thread after the fact
+    //
+    T_THREAD_CREATE_SUSPENDED = (1 << 0),
+
+    // Detach from the thread immediately on create, if this flag is specified there
+    // is no handle returned from the creation call
+    //
+    T_THREAD_CREATE_DETACHED = (1 << 1)
+};
+
+typedef struct T_Thread T_Thread;
+struct T_Thread {
+    OS_Handle handle; // out on create
+
+    T_ThreadProc *Proc;
+    void *param;
+
+    U64 stack_size; // in bytes, if zero the default will be used
+    T_ThreadFlags flags;
+};
+
+function void T_CreateThread(T_Thread *thread);
+
+function void T_ResumeThread(OS_Handle thread);
+function void T_JoinThread(OS_Handle thread);
+function void T_DetachThread(OS_Handle thread); // once detatched handle is considered invalid
+
+// @todo: maybe have "Try" and "Timeout" variants of these sync functions :timeout
+
+// Mutex/Lock
+//
+function OS_Handle T_CreateMutex();
+function void      T_DeleteMutex(OS_Handle mutex);
+
+function void T_AcquireMutex(OS_Handle mutex);
+function void T_ReleaseMutex(OS_Handle mutex);
+
+// Semaphore :timeout
+//
+function OS_Handle T_CreateSemaphore(U32 max);
+function void      T_DeleteSemaphore(OS_Handle semaphore);
+
+function void T_WaitSemaphore(OS_Handle semaphore);
+function void T_SignalSemaphore(OS_Handle semaphore);
+
+// RW lock
+//
+function OS_Handle T_CreateRWLock();
+function void      T_DeleteRWLock(OS_Handle rwlock);
+
+function void T_AcquireRWLockRead(OS_Handle rwlock);
+function void T_ReleaseRWLockRead(OS_Handle rwlock);
+
+function void T_AcquireRWLockWrite(OS_Handle rwlock);
+function void T_ReleaseRWLockWrite(OS_Handle rwlock);
+
+// Condition variable :timeout
+//
+function OS_Handle T_CreateConditionVar();
+function void      T_DeleteConditionVar(OS_Handle condvar);
+
+function void T_WaitConditionVar(OS_Handle condvar, OS_Handle lock);
+
+function void T_WaitConditionVarRead(OS_Handle condvar, OS_Handle rwlock);
+function void T_WaitConditionVarWrite(OS_Handle condvar, OS_Handle rwlock);
+
+function void T_WakeConditionVar(OS_Handle condvar);      // single
+function void T_BroadcastConditionVar(OS_Handle condvar); // all
+
+// Futex :timeout
+//
+typedef volatile U32 T_Futex;
+
+function void T_WaitFutex(T_Futex *futex, U32 value);
+function void T_WakeFutex(T_Futex *futex);      // single
+function void T_BroadcastFutex(T_Futex *futex); // all
 
 #if defined(__cplusplus)
 }
@@ -1057,6 +1164,280 @@ function Str8 FS_GetPath(M_Arena *arena, FS_PathType type);
 
 #if !defined(CORE_C_)
 #define CORE_C_
+
+#if !defined(OS_ARENA_LIMIT)
+    #define OS_ARENA_LIMIT GB(1)
+#endif
+
+internal void Log_Init(); // this has to be forwared declared so the OS_Init call can use it
+
+//
+// --------------------------------------------------------------------------------
+// :impl_os_init
+// --------------------------------------------------------------------------------
+//
+#if OS_WINDOWS
+
+//
+// :windows_core
+//
+
+typedef U32 Win32_ObjectType;
+enum {
+    WIN32_OBJECT_RELEASED = 0,
+    WIN32_OBJECT_THREAD,
+    WIN32_OBJECT_CRITICAL_SECTION,
+    WIN32_OBJECT_SRWLOCK,
+    WIN32_OBJECT_CONDITION_VAR
+};
+
+typedef struct Win32_Object Win32_Object;
+struct Win32_Object {
+    Win32_Object *next;
+
+    // @todo: we probably want generation numbers
+    //
+
+    Win32_ObjectType type;
+    union {
+        SRWLOCK srwlock;
+        CRITICAL_SECTION critical_section;
+        CONDITION_VARIABLE condition_var;
+        struct {
+            HANDLE handle;
+            DWORD  id;
+
+            T_ThreadProc *Proc;
+            void *param;
+
+            LONG ref;
+        } thread;
+    };
+};
+
+typedef struct Win32_Context Win32_Context;
+struct Win32_Context {
+    M_Arena *arena;
+
+    // Object freelists
+    //
+    SRWLOCK object_lock;
+    Win32_Object *free_objects;
+
+    // Cached paths, these don't change at runtime as of the current implementation
+    // allowing us to turn the "FS_GetPath" call into a simple string copy
+    //
+    Str8 cached_paths[FS_PATH_COUNT];
+};
+
+global_var Win32_Context *__windows;
+
+internal Str8 Win32_Str8FromWide(M_Arena *arena, WCHAR *str) {
+    Str8 result;
+
+    result.count = WideCharToMultiByte(CP_UTF8, 0, str, -1, 0, 0, 0, 0) - 1;
+    result.data  = M_ArenaPush(arena, U8, result.count + 1);
+
+    WideCharToMultiByte(CP_UTF8, 0, str, -1, cast(char *) result.data, cast(int) (result.count + 1), 0, 0);
+    return result;
+}
+
+internal WCHAR *Win32_WideFromStr8(M_Arena *arena, Str8 str) {
+    int    length = MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, 0, 0);
+    WCHAR *result = M_ArenaPush(arena, WCHAR, length);
+
+    MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, result, length);
+    return result;
+}
+
+internal Win32_Object *Win32_AllocObject(Win32_ObjectType type) {
+    Win32_Object *result;
+
+    AcquireSRWLockExclusive(&__windows->object_lock);
+
+    result = __windows->free_objects;
+    if (result) {
+        SLL_Pop(__windows->free_objects);
+    }
+    else {
+        result = M_ArenaPush(__windows->arena, Win32_Object);
+    }
+
+    ReleaseSRWLockExclusive(&__windows->object_lock);
+
+    Assert(result != 0);
+
+    result->type = type;
+    return result;
+}
+
+internal void Win32_ReleaseObject(Win32_Object *object) {
+    object->type = WIN32_OBJECT_RELEASED;
+
+    AcquireSRWLockExclusive(&__windows->object_lock);
+    SLL_Push(__windows->free_objects, object);
+    ReleaseSRWLockExclusive(&__windows->object_lock);
+}
+
+//
+// :windows_init
+//
+
+#include <shlobj.h>
+
+#pragma comment(lib, "shell32.lib") // SHGetKnownFolderPath
+#pragma comment(lib, "ole32.lib")   // CoTaskMemFree
+
+// :folderid_hack
+//
+#if LANG_CPP
+    #define __FOLDERID_RoamingAppData FOLDERID_RoamingAppData
+#else
+    #define __FOLDERID_RoamingAppData &FOLDERID_RoamingAppData
+#endif
+
+void OS_Init() {
+    M_Arena *arena = M_AllocArena(OS_ARENA_LIMIT);
+
+    // Initialise logging system
+    //
+    Log_Init();
+
+    // Setup context
+    //
+    __windows        = M_ArenaPush(arena, Win32_Context);
+    __windows->arena = arena;
+
+
+    // Cache the required runtime paths
+    //
+    M_Temp temp = M_AcquireTemp(0, 0);
+
+    // Executable path
+    //
+    {
+        WCHAR *lpFilename;
+        DWORD  nSize = 512;
+
+        DWORD err, count;
+        for (;;) {
+            // guess the buffer size, doubling the size each time it fails
+            //
+            nSize *= 2;
+            lpFilename = M_ArenaPush(temp.arena, WCHAR, nSize);
+
+            // get the module filename, this gives us the full executable path. if the buffer
+            // isn't big enough ERROR_INSUFFICIENT_BUFFER will be set. as the system doesn't
+            // actually tell us what the length of the buffer _should_ be we have to keep guessing
+            //
+            count = GetModuleFileNameW(0, lpFilename, nSize);
+            err   = GetLastError();
+
+            if (err != ERROR_INSUFFICIENT_BUFFER) { break; }
+
+            M_ArenaPopLast(temp.arena);
+        }
+
+        if (err == ERROR_SUCCESS) {
+            // successfully go the path, chop off the basename as it includes the full executable
+            // filename
+            //
+            while (count && lpFilename[count] != L'\\') {
+                count -= 1;
+            }
+
+            lpFilename[count] = L'\0';
+
+            __windows->cached_paths[FS_PATH_EXE] = Win32_Str8FromWide(arena, lpFilename);
+        }
+        else {
+            Log_Error("Failed to get executable path (0x%x)", err);
+        }
+    }
+
+    // User path
+    //
+    {
+        // this is just annoying, this function uses references in C++ mode and a pointer in C mode
+        // thus we have to do this hacky work around using a define :folderid_hack
+        //
+        PWSTR ppszPath;
+        HRESULT hr = SHGetKnownFolderPath(__FOLDERID_RoamingAppData, 0, 0, &ppszPath);
+        if (hr == S_OK) {
+            __windows->cached_paths[FS_PATH_USER] = Win32_Str8FromWide(arena, ppszPath);
+        }
+        else {
+            // @todo: maybe we should fallback to attempt to read the environment variable %APPDATA%
+            // and return that
+            //
+            Log_Error("Failed to get path (hr = 0x%x)", hr);
+        }
+
+        CoTaskMemFree(ppszPath);
+    }
+
+    // Temp path
+    //
+    {
+        DWORD  nBufferSize = MAX_PATH + 1; // apparently this is the max possible return value
+        WCHAR *lpBuffer    = M_ArenaPush(temp.arena, WCHAR, nBufferSize);
+
+        // :note documentation says to use GetTempPath2W but this is only really available
+        // in very new sdk versions. there isn't really any difference between them anyway
+        // when we eventually switch to have an "init" function we can test for the existence
+        // and fallback to GetTempPathW if not available
+        //
+        nBufferSize = GetTempPathW(nBufferSize, lpBuffer);
+        if (nBufferSize > 0) {
+            // for whatever reason the temp path has a trailing backslash so we remove it
+            //
+            lpBuffer[nBufferSize - 1] = 0;
+
+            __windows->cached_paths[FS_PATH_TEMP] = Win32_Str8FromWide(arena, lpBuffer);
+        }
+        else {
+            Log_Error("Failed to get temporary path (0x%x)", GetLastError());
+        }
+    }
+
+    // Working path
+    //
+    {
+        // :threading this is not thread-safe if we have a way of setting the working directory
+        // as we don't at the moment it doesn't really matter
+        //
+        // If we decide to add the ability to change the current directory programatically
+        // this will no longer be cached in this way
+        //
+        DWORD nBufferLength = GetCurrentDirectoryW(0, 0);
+        if (nBufferLength > 0) {
+            WCHAR *lpBuffer = M_ArenaPush(temp.arena, WCHAR, nBufferLength);
+            if (GetCurrentDirectoryW(nBufferLength, lpBuffer)) {
+                __windows->cached_paths[FS_PATH_WORKING] = Win32_Str8FromWide(arena, lpBuffer);
+            }
+            else {
+                Log_Error("Failed to get working path (0x%x)", GetLastError());
+            }
+        }
+        else {
+            Log_Error("Failed to get working path (0x%x)", GetLastError());
+        }
+    }
+
+    M_ReleaseTemp(temp);
+
+    // Initialise object system
+    //
+    InitializeSRWLock(&__windows->object_lock);
+}
+
+#elif OS_MACOS
+    #error "macOS initalisation is not implemented"
+#elif OS_LINUX
+    #error "Linux initalisation is not implemented"
+#elif OS_SWITCH
+    #error "Switchbrew initalisation is not implemented"
+#endif
 
 //
 // --------------------------------------------------------------------------------
@@ -1295,7 +1676,7 @@ U64 RotateRight_U64(U64 x, U32 count) {
 //
 
 OS_Handle OS_NilHandle() {
-    OS_Handle result = { 0 };
+    OS_Handle result = ZERO(OS_Handle);
     return result;
 }
 
@@ -1694,7 +2075,7 @@ void _QuickSort(void *array, S64 count, CompareFunc *Compare, U64 element_size) 
 #if OS_WINDOWS
 
 //
-// :win32_arena
+// :windows_arena
 //
 
 void *M_Reserve(U64 size) {
@@ -1733,7 +2114,7 @@ U64 M_GetAllocationGranularity() {
 }
 
 #elif OS_MACOS
-#error "macOS memory subsystem not implemented"
+    #error "macOS memory subsystem not implemented"
 #elif OS_LINUX
 
 //
@@ -2726,7 +3107,7 @@ void Log_PushScope() {
 }
 
 Log_MessageArray Log_PopScope(M_Arena *arena) {
-    Log_MessageArray result = { 0 };
+    Log_MessageArray result = ZERO(Log_MessageArray);
 
     Log_Scope *scope = __thread_logger->scopes;
     Log_MessageList *messages = &scope->messages;
@@ -2814,26 +3195,8 @@ void Log_PushMessage(S32 code, Str8 file, U32 line, Str8 func, const char *forma
 #if OS_WINDOWS
 
 //
-// :win32_filesystem
+// :windows_filesystem
 //
-
-internal WCHAR *Win32_WideFromStr8(M_Arena *arena, Str8 str) {
-    int    length = MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, 0, 0);
-    WCHAR *result = M_ArenaPush(arena, WCHAR, length);
-
-    MultiByteToWideChar(CP_UTF8, 0, cast(char *) str.data, cast(int) str.count, result, length);
-    return result;
-}
-
-internal Str8 Win32_Str8FromWide(M_Arena *arena, WCHAR *str) {
-    Str8 result;
-
-    result.count = WideCharToMultiByte(CP_UTF8, 0, str, -1, 0, 0, 0, 0) - 1;
-    result.data  = M_ArenaPush(arena, U8, result.count + 1);
-
-    WideCharToMultiByte(CP_UTF8, 0, str, -1, cast(char *) result.data, cast(int) (result.count + 1), 0, 0);
-    return result;
-}
 
 internal void Win32_ListPathRecurse(M_Arena *arena, FS_List *list, Str8 path, FS_ListFlags flags) {
     M_Temp temp  = M_AcquireTemp(1, &arena);
@@ -2908,7 +3271,7 @@ internal void Win32_ListPathRecurse(M_Arena *arena, FS_List *list, Str8 path, FS
 }
 
 FS_List FS_ListPath(M_Arena *arena, Str8 path, FS_ListFlags flags) {
-    FS_List result = { 0 };
+    FS_List result = ZERO(FS_List);
 
     Win32_ListPathRecurse(arena, &result, path, flags);
     return result;
@@ -2980,7 +3343,7 @@ S64 FS_ReadFile(OS_Handle file, Str8 data, U64 offset) {
         U8 *ptr       = data.data;
         S64 remaining = data.count;
 
-        OVERLAPPED overlapped = { 0 };
+        OVERLAPPED overlapped = ZERO(OVERLAPPED);
         overlapped.Offset     = cast(DWORD) (offset >>  0);
         overlapped.OffsetHigh = cast(DWORD) (offset >> 32);
 
@@ -3019,7 +3382,7 @@ S64 FS_WriteFile(OS_Handle file, Str8 data, U64 offset) {
         U8 *ptr       = data.data;
         S64 remaining = data.count;
 
-        OVERLAPPED overlapped = { 0 };
+        OVERLAPPED overlapped = ZERO(OVERLAPPED);
         overlapped.Offset     = cast(DWORD) (offset >>  0);
         overlapped.OffsetHigh = cast(DWORD) (offset >> 32);
 
@@ -3104,7 +3467,7 @@ FS_Properties FS_PropertiesFromHandle(OS_Handle file) {
 }
 
 FS_Time FS_TimeFromHandle(OS_Handle file) {
-    FS_Time result = { 0 };
+    FS_Time result = ZERO(FS_Time);
 
     if (OS_HandleValid(file)) {
         HANDLE hFile = cast(HANDLE) file.v[0];
@@ -3127,7 +3490,7 @@ FS_Time FS_TimeFromHandle(OS_Handle file) {
 }
 
 Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
-    Str8 result = { 0 };
+    Str8 result = ZERO(Str8);
 
     if (OS_HandleValid(file)) {
         HANDLE hFile = cast(HANDLE) file.v[0];
@@ -3218,7 +3581,7 @@ FS_Properties FS_PropertiesFromPath(Str8 path) {
 }
 
 FS_Time FS_TimeFromPath(Str8 path) {
-    FS_Time result = { 0 };
+    FS_Time result = ZERO(FS_Time);
 
     M_Temp temp  = M_AcquireTemp(0, 0);
     WCHAR *wpath = Win32_WideFromStr8(temp.arena, path);
@@ -3331,129 +3694,12 @@ B32 FS_RemoveDirectory(Str8 path) {
     return result;
 }
 
-// :folderid_hack
-//
-#include <shlobj.h>
-
-#pragma comment(lib, "shell32.lib") // SHGetKnownFolderPath
-#pragma comment(lib, "ole32.lib")   // CoTaskMemFree
-
-#if LANG_CPP
-    #define __FOLDERID_RoamingAppData FOLDERID_RoamingAppData
-#else
-    #define __FOLDERID_RoamingAppData &FOLDERID_RoamingAppData
-#endif
-
 Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
-    Str8 result = { 0 };
+    Str8 result = ZERO(Str8);
 
-    // @todo: will likely have some sort of "init" function in the future where we can cache some
-    // of this stuff and then just copy it directly rather than having to do the work every time
-    //
-
-    M_Temp temp = M_AcquireTemp(1, &arena);
-
-    switch (type) {
-        case FS_PATH_EXE: {
-            WCHAR *lpFilename;
-            DWORD  nSize = 512;
-
-            DWORD err, count;
-            for (;;) {
-                // guess the buffer size, doubling the size each time it fails
-                //
-                nSize *= 2;
-                lpFilename = M_ArenaPush(temp.arena, WCHAR, nSize);
-
-                // get the module filename, this gives us the full executable path. if the buffer
-                // isn't big enough ERROR_INSUFFICIENT_BUFFER will be set. as the system doesn't
-                // actually tell us what the length of the buffer _should_ be we have to keep guessing
-                //
-                count = GetModuleFileNameW(0, lpFilename, nSize);
-                err   = GetLastError();
-
-                if (err != ERROR_INSUFFICIENT_BUFFER) { break; }
-
-                M_ArenaPopLast(temp.arena);
-            }
-
-            if (err == ERROR_SUCCESS) {
-                // successfully go the path, chop off the basename as it includes the full executable
-                // filename
-                //
-                while (count && lpFilename[count] != L'\\') {
-                    count -= 1;
-                }
-
-                lpFilename[count] = L'\0';
-
-                result = Win32_Str8FromWide(arena, lpFilename);
-            }
-            else {
-                Log_Error("Failed to get executable path (0x%x)", err);
-            }
-        }
-        break;
-        case FS_PATH_USER: {
-            // this is just annoying, this function uses references in C++ mode and a pointer in C mode
-            // thus we have to do this hacky work around using a define :folderid_hack
-            //
-            PWSTR ppszPath;
-            HRESULT hr = SHGetKnownFolderPath(__FOLDERID_RoamingAppData, 0, 0, &ppszPath);
-            if (hr == S_OK) {
-                result = Win32_Str8FromWide(arena, ppszPath);
-            }
-            else {
-                // @todo: maybe we should fallback to attempt to read the environment variable %APPDATA%
-                // and return that
-                //
-                Log_Error("Failed to get path (hr = 0x%x)", hr);
-            }
-
-            CoTaskMemFree(ppszPath);
-        }
-        break;
-        case FS_PATH_TEMP: {
-            DWORD  nBufferSize = MAX_PATH + 1; // apparently this is the max possible return value
-            WCHAR *lpBuffer    = M_ArenaPush(temp.arena, WCHAR, nBufferSize);
-
-            // :note documentation says to use GetTempPath2W but this is only really available
-            // in very new sdk versions. there isn't really any difference between them anyway
-            // when we eventually switch to have an "init" function we can test for the existence
-            // and fallback to GetTempPathW if not available
-            //
-            nBufferSize = GetTempPathW(nBufferSize, lpBuffer);
-            if (nBufferSize > 0) {
-                // for whatever reason the temp path has a trailing backslash so we remove it
-                //
-                lpBuffer[nBufferSize - 1] = 0;
-
-                result = Win32_Str8FromWide(arena, lpBuffer);
-            }
-            else {
-                Log_Error("Failed to get temporary path (0x%x)", GetLastError());
-            }
-        }
-        break;
-        case FS_PATH_WORKING: {
-            // :threading this is not thread-safe if we have a way of setting the working directory
-            // as we don't at the moment it doesn't really matter
-            //
-            DWORD nBufferLength = GetCurrentDirectoryW(0, 0);
-            if (nBufferLength > 0) {
-                WCHAR *lpBuffer = M_ArenaPush(temp.arena, WCHAR, nBufferLength);
-                if (GetCurrentDirectoryW(nBufferLength, lpBuffer)) {
-                    result = Win32_Str8FromWide(arena, lpBuffer);
-                }
-            }
-            else {
-                Log_Error("Failed to get working path (0x%x)", GetLastError());
-            }
-        }
-        break;
+    if (type < FS_PATH_COUNT) {
+        result = Str8_Copy(arena, __windows->cached_paths[type]);
     }
-
-    M_ReleaseTemp(temp);
 
     return result;
 }
@@ -3566,7 +3812,7 @@ internal void Linux_ListPathRecursive(M_Arena *arena, FS_List *list, Str8 path, 
 }
 
 FS_List FS_ListPath(M_Arena *arena, Str8 path, FS_ListFlags flags) {
-    FS_List result = { 0 };
+    FS_List result = ZERO(FS_List);
 
     Linux_ListPathRecursive(arena, &result, path, flags);
     return result;
@@ -3734,7 +3980,7 @@ FS_Properties FS_PropertiesFromHandle(OS_Handle file) {
 }
 
 FS_Time FS_TimeFromHandle(OS_Handle file) {
-    FS_Time result = { 0 };
+    FS_Time result = ZERO(FS_Time);
 
     if (OS_HandleValid(file)) {
         int fd = cast(int) file.v[0];
@@ -3757,7 +4003,7 @@ FS_Time FS_TimeFromHandle(OS_Handle file) {
 }
 
 Str8 FS_PathFromHandle(M_Arena *arena, OS_Handle file) {
-    Str8 result = { 0 };
+    Str8 result = ZERO(Str8);
 
     if (OS_HandleValid(file)) {
         M_Temp temp = M_AcquireTemp(1, &arena);
@@ -3841,7 +4087,7 @@ FS_Properties FS_PropertiesFromPath(Str8 path) {
 }
 
 FS_Time FS_TimeFromPath(Str8 path) {
-    FS_Time result = { 0 };
+    FS_Time result = ZERO(FS_Time);
 
     M_Temp temp = M_AcquireTemp(0, 0);
     Str8 zpath  = Str8_Copy(temp.arena, path);
@@ -3939,7 +4185,7 @@ B32 FS_RemoveDirectory(Str8 path) {
 }
 
 Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
-    Str8 result = { 0 };
+    Str8 result = ZERO(Str8);
 
     M_Temp temp = M_AcquireTemp(1, &arena);
 
@@ -3980,8 +4226,8 @@ Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
             // which we can get by reading /proc/self/environ on an init call
             //
             if (__environ) {
-                Str8 home_dir = { 0 };
-                Str8 xdg_dir  = { 0 };
+                Str8 home_dir = ZERO(Str8);
+                Str8 xdg_dir  = ZERO(Str8);
 
                 for (U32 it = 0; __environ[it] != 0; it += 1) {
                     Str8 env = Sz(__environ[it]);
@@ -4074,11 +4320,11 @@ Str8 FS_GetPath(M_Arena *arena, FS_PathType type) {
 }
 
 #elif OS_SWITCH
-    #error "switchbrew filesystem subsystem not implemented"
+    #error "Switchbrew filesystem subsystem not implemented"
 #endif
 
 Str8 FS_ReadEntireFile(M_Arena *arena, Str8 path) {
-    Str8 result = { 0 };
+    Str8 result = ZERO(Str8);
 
     OS_Handle file = FS_OpenFile(path, FS_ACCESS_READ);
 
@@ -4091,6 +4337,302 @@ Str8 FS_ReadEntireFile(M_Arena *arena, Str8 path) {
 
     return result;
 }
+
+//
+// --------------------------------------------------------------------------------
+// :impl_threading
+// --------------------------------------------------------------------------------
+//
+
+#if OS_WINDOWS
+
+//
+// --------------------------------------------------------------------------------
+// :windows_threading
+// --------------------------------------------------------------------------------
+//
+
+internal DWORD Win32_ThreadEntry(LPVOID param) {
+    DWORD result = 0;
+
+    Win32_Object *object = cast(Win32_Object *) param;
+
+    Log_Init();
+
+    T_ThreadProc *TProc  = object->thread.Proc;
+    void         *tparam = object->thread.param;
+
+    TProc(tparam);
+
+    LONG ref = _InterlockedAnd(&object->thread.ref, ~0x2);
+    if ((ref & 0x1) == 0) {
+        CloseHandle(object->thread.handle);
+        Win32_ReleaseObject(object);
+    }
+
+    return result;
+}
+
+void T_CreateThread(T_Thread *thread) {
+    Win32_Object *object = Win32_AllocObject(WIN32_OBJECT_THREAD);
+
+    object->thread.Proc  = thread->Proc;
+    object->thread.param = thread->param;
+
+    DWORD id, flags = CREATE_SUSPENDED;
+
+    HANDLE handle = CreateThread(0, thread->stack_size, Win32_ThreadEntry, object, flags, &id);
+
+    object->thread.handle = handle;
+    object->thread.id     = id;
+    object->thread.ref    = 0x3;
+
+    thread->handle.v[0] = cast(U64) object;
+
+    if (thread->flags & T_THREAD_CREATE_DETACHED) {
+        // Detach the calling thread from the new thread automatically, this way
+        // you don't have to care about managing the returned handle if you
+        // just want to "fire and forget" threads at startup
+        //
+        // Returned handle becomes invalid
+        //
+        T_DetachThread(thread->handle);
+        thread->handle = OS_NilHandle();
+
+        // Always resume the thread if created detached otherwise there wouldn't
+        // be any way for the calling thread to resume the created thread!
+        //
+        ResumeThread(object->thread.handle);
+    }
+    else if ((thread->flags & T_THREAD_CREATE_SUSPENDED) == 0) {
+        // Automatically resume the thread as it wasn't requested to be
+        //
+        ResumeThread(object->thread.handle);
+    }
+}
+
+void T_ResumeThread(OS_Handle thread) {
+    Win32_Object *object = cast(Win32_Object *) thread.v[0];
+    Assert(object->type == WIN32_OBJECT_THREAD);
+
+    ResumeThread(object->thread.handle);
+}
+
+void T_JoinThread(OS_Handle thread) {
+    Win32_Object *object = cast(Win32_Object *) thread.v[0];
+    Assert(object->type == WIN32_OBJECT_THREAD);
+
+    WaitForSingleObject(object->thread.handle, INFINITE);
+}
+
+void T_DetachThread(OS_Handle thread) {
+    Win32_Object *object = cast(Win32_Object *) thread.v[0];
+    Assert(object->type == WIN32_OBJECT_THREAD);
+
+    LONG ref = _InterlockedAnd(&object->thread.ref, ~0x1);
+    if ((ref & 0x2) == 0) {
+        CloseHandle(object->thread.handle);
+        Win32_ReleaseObject(object);
+    }
+}
+
+OS_Handle T_CreateMutex() {
+    OS_Handle result;
+
+    Win32_Object *object = Win32_AllocObject(WIN32_OBJECT_CRITICAL_SECTION);
+
+    // @todo: maybe change to "InitializeCriticalSectionAndSpinCount" for lower latency
+    // exchanges when contention is low
+    //
+    InitializeCriticalSection(&object->critical_section);
+
+    result.v[0] = cast(U64) object;
+    return result;
+}
+
+void T_DeleteMutex(OS_Handle mutex) {
+    Win32_Object *object = cast(Win32_Object *) mutex.v[0];
+    Assert(object->type == WIN32_OBJECT_CRITICAL_SECTION);
+
+    DeleteCriticalSection(&object->critical_section);
+
+    Win32_ReleaseObject(object);
+}
+
+void T_AcquireMutex(OS_Handle mutex) {
+    Win32_Object *object = cast(Win32_Object *) mutex.v[0];
+    Assert(object->type == WIN32_OBJECT_CRITICAL_SECTION);
+
+    EnterCriticalSection(&object->critical_section);
+}
+
+void T_ReleaseMutex(OS_Handle mutex) {
+    Win32_Object *object = cast(Win32_Object *) mutex.v[0];
+    Assert(object->type == WIN32_OBJECT_CRITICAL_SECTION);
+
+    LeaveCriticalSection(&object->critical_section);
+}
+
+OS_Handle T_CreateSemaphore(U32 max) {
+    OS_Handle result;
+
+    // @todo: maybe allow a name, we don't support cross-process semaphores
+    // however
+    //
+    HANDLE hSemaphore = CreateSemaphoreW(0, max, max, 0);
+
+    result.v[0] = cast(U64) hSemaphore;
+    return result;
+}
+
+void T_DeleteSemaphore(OS_Handle semaphore) {
+    HANDLE hSemaphore = cast(HANDLE) semaphore.v[0];
+    CloseHandle(hSemaphore);
+}
+
+void T_WaitSemaphore(OS_Handle semaphore) {
+    HANDLE hSemaphore = cast(HANDLE) semaphore.v[0];
+    WaitForSingleObject(hSemaphore, INFINITE);
+}
+
+void T_SignalSemaphore(OS_Handle semaphore) {
+    HANDLE hSemaphore = cast(HANDLE) semaphore.v[0];
+    ReleaseSemaphore(hSemaphore, 1, 0);
+}
+
+OS_Handle T_CreateRWLock() {
+    OS_Handle result;
+
+    // According to documentation the size of the SRWLock type is pointer sized, however,
+    // I don't know if the pointer has to be in the same memory location so we allocate
+    // it dynamically for now @test!!
+    //
+    Win32_Object *object = Win32_AllocObject(WIN32_OBJECT_SRWLOCK);
+    InitializeSRWLock(&object->srwlock);
+
+    result.v[0] = cast(U64) object;
+    return result;
+}
+
+void T_DeleteRWLock(OS_Handle rwlock) {
+    Win32_Object *object = cast(Win32_Object *) rwlock.v[0];
+    Assert(object->type == WIN32_OBJECT_SRWLOCK);
+
+    Win32_ReleaseObject(object);
+}
+
+void T_AcquireRWLockRead(OS_Handle rwlock) {
+    Win32_Object *object = cast(Win32_Object *) rwlock.v[0];
+    Assert(object->type == WIN32_OBJECT_SRWLOCK);
+
+    AcquireSRWLockShared(&object->srwlock);
+}
+
+void T_ReleaseRWLockRead(OS_Handle rwlock) {
+    Win32_Object *object = cast(Win32_Object *) rwlock.v[0];
+    Assert(object->type == WIN32_OBJECT_SRWLOCK);
+
+    ReleaseSRWLockShared(&object->srwlock);
+}
+
+void T_AcquireRWLockWrite(OS_Handle rwlock) {
+    Win32_Object *object = cast(Win32_Object *) rwlock.v[0];
+    Assert(object->type == WIN32_OBJECT_SRWLOCK);
+
+    AcquireSRWLockExclusive(&object->srwlock);
+}
+
+void T_ReleaseRWLockWrite(OS_Handle rwlock) {
+    Win32_Object *object = cast(Win32_Object *) rwlock.v[0];
+    Assert(object->type == WIN32_OBJECT_SRWLOCK);
+
+    ReleaseSRWLockExclusive(&object->srwlock);
+}
+
+OS_Handle T_CreateConditionVar() {
+    OS_Handle result;
+
+    Win32_Object *object = Win32_AllocObject(WIN32_OBJECT_CONDITION_VAR);
+    InitializeConditionVariable(&object->condition_var);
+
+    result.v[0] = cast(U64) object;
+    return result;
+}
+
+void T_DeleteConditionVar(OS_Handle condvar) {
+    Win32_Object *object = cast(Win32_Object *) condvar.v[0];
+    Assert(object->type == WIN32_OBJECT_CONDITION_VAR);
+
+    Win32_ReleaseObject(object);
+}
+
+void T_WaitConditionVar(OS_Handle condvar, OS_Handle mutex) {
+    Win32_Object *cvar = cast(Win32_Object *) condvar.v[0];
+    Win32_Object *lock = cast(Win32_Object *) mutex.v[0];
+
+    Assert(cvar->type == WIN32_OBJECT_CONDITION_VAR);
+    Assert(lock->type == WIN32_OBJECT_CRITICAL_SECTION);
+
+    SleepConditionVariableCS(&cvar->condition_var, &lock->critical_section, INFINITE);
+}
+
+void T_WaitConditionVarRead(OS_Handle condvar, OS_Handle rwlock) {
+    Win32_Object *cvar = cast(Win32_Object *) condvar.v[0];
+    Win32_Object *lock = cast(Win32_Object *) rwlock.v[0];
+
+    Assert(cvar->type == WIN32_OBJECT_CONDITION_VAR);
+    Assert(lock->type == WIN32_OBJECT_SRWLOCK);
+
+    ULONG flags = CONDITION_VARIABLE_LOCKMODE_SHARED;
+    SleepConditionVariableSRW(&cvar->condition_var, &lock->srwlock, INFINITE, flags);
+}
+
+void T_WaitConditionVarWrite(OS_Handle condvar, OS_Handle rwlock) {
+    Win32_Object *cvar = cast(Win32_Object *) condvar.v[0];
+    Win32_Object *lock = cast(Win32_Object *) rwlock.v[0];
+
+    Assert(cvar->type == WIN32_OBJECT_CONDITION_VAR);
+    Assert(lock->type == WIN32_OBJECT_SRWLOCK);
+
+    SleepConditionVariableSRW(&cvar->condition_var, &lock->srwlock, INFINITE, 0);
+}
+
+void T_WakeConditionVar(OS_Handle condvar) {
+    Win32_Object *object = cast(Win32_Object *) condvar.v[0];
+    Assert(object->type == WIN32_OBJECT_CONDITION_VAR);
+
+    WakeConditionVariable(&object->condition_var);
+}
+
+void T_BroadcastConditionVar(OS_Handle condvar) {
+    Win32_Object *object = cast(Win32_Object *) condvar.v[0];
+    Assert(object->type == WIN32_OBJECT_CONDITION_VAR);
+
+    WakeAllConditionVariable(&object->condition_var);
+}
+
+void T_WaitFutex(T_Futex *futex, U32 value) {
+    for (;;) {
+        WaitOnAddress(futex, &value, sizeof(U32), INFINITE);
+        if (futex[0] != value) { break; }
+    }
+}
+
+void T_WakeFutex(T_Futex *futex) {
+    WakeByAddressSingle(cast(PVOID) futex);
+}
+
+void T_BroadcastFutex(T_Futex *futex) {
+    WakeByAddressAll(cast(PVOID) futex);
+}
+
+#elif OS_MACOS
+    #error "macOS threading subsystem not implemented"
+#elif OS_LINUX
+    #error "Linux threading subsystem not implemented"
+#elif OS_SWITCH
+    #error "Switchbrew threading subsystem not implemented"
+#endif
 
 #endif  // CORE_C_
 
